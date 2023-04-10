@@ -20,19 +20,20 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
 def load_graph(input_edge_file,
-               projection_origin=defaultdict(lambda: defaultdict(set)),
-               reverse_origin=defaultdict(lambda: defaultdict(set))):
+               projection_origin=defaultdict(lambda: defaultdict(lambda: defaultdict(float))),
+               reverse_origin=defaultdict(lambda: defaultdict(lambda: defaultdict(float)))):
 
     projections = copy.deepcopy(projection_origin)
     reverse = copy.deepcopy(reverse_origin)
     with open(input_edge_file, 'r', errors='ignore') as infile:
         for line in infile.readlines():
-            e1, r, e2 = line.strip().split('\t')
+            e1, r, e2, prob = line.strip().split('\t')
             e1 = int(e1)
             e2 = int(e2)
             r = int(r)
-            projections[e1][r].add(e2)
-            reverse[e2][r].add(e1)
+            prob = float(prob)
+            projections[e1][r][e2] = prob
+            reverse[e2][r][e1] = prob
 
     return projections, reverse
 
@@ -272,8 +273,8 @@ def parse_ans_set(answer_set: str):
 
 def load_data_with_indexing(data_path):
     entity_dict, relation_dict, id2ent, id2rel = read_indexing(data_path)
-    proj_none = defaultdict(lambda: defaultdict(set))
-    reverse_none = defaultdict(lambda: defaultdict(set))
+    proj_none = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    reverse_none = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     proj_train, reverse_train = load_graph(join(data_path, "train.txt"),
                                            proj_none,
                                            reverse_none)

@@ -18,10 +18,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--benchmark_name", type=str, default="benchmark")
 parser.add_argument("--input_formula_file", type=str, default="outputs/test_generated_formula_anchor_node=3.csv")
 parser.add_argument("--sample_size", default=5, type=int)
-parser.add_argument("--knowledge_graph", action="append")
+parser.add_argument("--knowledge_graph", action="append", default=["NELL-1115"])
 parser.add_argument("--ncpus", type=int, default=1)
 parser.add_argument("--num_samples", type=int, default=5000)
-parser.add_argument("--meaningful_difference_setting", type=str, default='mixed')
+parser.add_argument("--meaningful_difference_setting", type=str, default='fixed_False')
 
 
 def normal_forms_transformation(query):
@@ -87,7 +87,8 @@ if __name__ == "__main__":
     df = pd.read_csv(args.input_formula_file)
     beta_data_folders = {"FB15k-237": "data/FB15k-237-betae",
                          "FB15k": "data/FB15k-betae",
-                         "NELL": "data/NELL-betae"}
+                         "NELL-995": "data/NELL-betae",
+                         "NELL-1115": "data/NELL-1115-betae"}
     for kg in args.knowledge_graph:
         data_path = beta_data_folders[kg]
         ent2id, rel2id, \

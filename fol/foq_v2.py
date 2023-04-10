@@ -2,6 +2,7 @@ import collections
 import copy
 import json
 import random
+import numpy as np
 from itertools import product
 from abc import ABC, abstractmethod
 from typing import List, Tuple, TypedDict
@@ -230,7 +231,7 @@ class Entity(FirstOrderSetQuery):
 
     def deterministic_query(self, args, **kwargs):
         # TODO: change to return a list of set
-        return {self.entities[0]}
+        return {(self.entities[0], 1.0)}
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, **kwargs):
         if requirement:
@@ -246,7 +247,7 @@ class Entity(FirstOrderSetQuery):
         else:
             self.entities = new_entity
 
-        return set(new_entity)
+        return {(ent, 1.0) for ent in new_entity}
 
     def random_query(self, projs, cumulative=False):
         new_variable = random.sample(set(projs.keys()), 1)[0]
@@ -307,8 +308,11 @@ class Negation(FirstOrderSetQuery):
         self.query.lift()
 
     def deterministic_query(self, projection):
-        ans = projection.keys() - self.query.deterministic_query(projection)
-        return ans
+        query_answers = self.query.deterministic_query(projection)
+        neg_prob = np.mean([prob for (e, prob) in query_answers]) 
+        objects = projection.keys() - {e for (e, prob) in query_answers}
+        objects = {(e, neg_prob) for e in objects}
+        return objects
 
     def backward_sample(self, projs, rprojs, requirement: bool = None, cumulative=False,
                         meaningful_difference: bool = False, **kwargs):
@@ -319,8 +323,12 @@ class Negation(FirstOrderSetQuery):
         new_requirement = defaultdict(set)
         new_requirement['must include'] = requirement['must exclude']
         new_requirement['must exclude'] = requirement['must include']
-        return projs.keys() - self.query.backward_sample(projs, rprojs, new_requirement, cumulative,
+        query_answers = self.query.backward_sample(projs, rprojs, new_requirement, cumulative,
                                                          meaningful_difference, **kwargs)
+        neg_prob = np.mean([prob for (e, prob) in query_answers]) 
+        objects = projs.keys() - {e for (e, prob) in query_answers}
+        objects = {(e, neg_prob) for e in objects}
+        return objects
 
     def random_query(self, projs, cumulative=False):
         ans = projs.keys() - self.query.random_query(projs, cumulative)
@@ -393,9 +401,15 @@ class Projection(FirstOrderSetQuery):
     def deterministic_query(self, projs):
         rel = self.relations[0]
         result = self.query.deterministic_query(projs)
+
+        probs_dict = defaultdict(list)
+        for (par_entity, par_prob) in result:  # FIXME: there used to be a copy
+            if isinstance(par_entity, int) and isinstance(par_prob, float):
+                for chi_entity in projs[par_entity][rel].keys():
+                    probs_dict[chi_entity].append(par_prob * projs[par_entity][rel][chi_entity])
         answer = set()
-        for e in result:
-            answer.update(projs[e][rel])
+        for ent, probs_list in probs_dict.items():
+            answer.add((ent, np.mean(probs_list)))
         return answer
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, meaningful_difference: bool = False,
@@ -407,9 +421,9 @@ class Projection(FirstOrderSetQuery):
             while True:
                 cursor = random.sample(rprojs.keys() - exclude_point, 1)[0]
                 relation = random.sample(rprojs[cursor].keys(), 1)[0]
-                parents = rprojs[cursor][relation]
+                parents = rprojs[cursor][relation].keys()
                 parent = random.sample(parents, 1)[0]
-                if not exclude_point.issubset(projs[parent][relation]):
+                if not exclude_point.issubset(projs[parent][relation].keys()):
                     break
             return parent, relation
 
@@ -420,16 +434,16 @@ class Projection(FirstOrderSetQuery):
         if requirement['must include']:
             cursor = list(requirement['must include'])[0]
             relation = random.sample(rprojs[cursor].keys(), 1)[0]
-            parents = rprojs[cursor][relation]
+            parents = rprojs[cursor][relation].keys()
             # find an incoming edge and a corresponding node
             parent = random.sample(parents, 1)[0]
         elif requirement['must exclude']:
             if requirement['optional include']:
                 cursor = list(requirement['optional include'])[0]
                 for relation in rprojs[cursor].keys():
-                    parents = rprojs[cursor][relation]
+                    parents = rprojs[cursor][relation].keys()
                     for parent in parents:
-                        if not requirement['must exclude'].issubset(projs[parent][relation]):
+                        if not requirement['must exclude'].issubset(projs[parent][relation].keys()):
                             break
                     else:
                         continue
@@ -441,9 +455,9 @@ class Projection(FirstOrderSetQuery):
         elif requirement['optional include']:
             cursor = list(requirement['optional include'])[0]
             for relation in rprojs[cursor].keys():
-                parents = rprojs[cursor][relation]
+                parents = rprojs[cursor][relation].keys()
                 for parent in parents:
-                    if not requirement['optional exclude'].issubset(projs[parent][relation]):
+                    if not requirement['optional exclude'].issubset(projs[parent][relation].keys()):
                         break
                 else:
                     continue
@@ -460,10 +474,14 @@ class Projection(FirstOrderSetQuery):
         if None in p_object:  # FIXME: why this is a none in return type
             raise ValueError
 
+        probs_dict = defaultdict(list)
+        for (par_entity, par_prob) in p_object:  # FIXME: there used to be a copy
+            if isinstance(par_entity, int) and isinstance(par_prob, float):
+                for chi_entity in projs[par_entity][relation].keys():
+                    probs_dict[chi_entity].append(par_prob * projs[par_entity][relation][chi_entity])
         objects = set()
-        for entity in p_object:  # FIXME: there used to be a copy
-            if isinstance(entity, int):
-                objects.update(projs[entity][relation])
+        for ent, probs_list in probs_dict.items():
+            objects.add((ent, np.mean(probs_list)))
 
         if cumulative:
             self.relations.append(relation)
@@ -584,9 +602,17 @@ class Intersection(MultipleSetQuery):
         return estimator.get_conjunction_embedding(embed_list, **kwargs)
 
     def deterministic_query(self, projs):
-        return set.intersection(
-            *(q.deterministic_query(projs) for q in self.sub_queries)
-        )
+        sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries]
+        ent2probs = defaultdict(list)
+        sub_ent_list = []
+        for sub_objs in sub_obj_list:
+            sub_ent_list.append(set())
+            for e, prob in sub_objs:
+                sub_ent_list[-1].add(e)
+                ent2probs[e].append(prob)
+
+        result = {(e, np.min(ent2probs[e])) for e in set.intersection(*sub_ent_list)}
+        return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative: bool = False,
                         meaningful_difference: bool = False, **kwargs):
@@ -606,6 +632,9 @@ class Intersection(MultipleSetQuery):
             positive_requirement['optional include'] = requirement['optional include']
             positive_choose_requirement = copy.deepcopy(requirement)
             choose_formula = random.randint(0, len(positive_subqueries) - 1)
+
+            pos_ent_list = []
+            ent2probs = defaultdict(list)
             for i in range(len(positive_subqueries)):
                 if i == choose_formula:
                     pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, positive_choose_requirement,
@@ -613,8 +642,13 @@ class Intersection(MultipleSetQuery):
                 else:
                     pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, positive_requirement,
                                                                       cumulative, meaningful_difference, **kwargs)
-                pos_obj_list.append(pos_objs)
-            all_pos_objs = set.intersection(*pos_obj_list)
+                pos_ent_set = {e for e,_ in pos_objs}
+                pos_ent_list.append(pos_ent_set)
+
+                for ent, prob in pos_objs:
+                    ent2probs[ent].append(prob)
+            all_pos_objs = set.intersection(*pos_ent_list)
+
             negative_requirement = defaultdict(set)
             negative_requirement['must exclude'] = requirement['must include']
             negative_requirement['optional exclude'] = requirement['optional include']
@@ -634,8 +668,15 @@ class Intersection(MultipleSetQuery):
                 else:
                     neg_objs = neg_subqueries[i].backward_sample(projs, rprojs, negative_requirement, cumulative,
                                                                  meaningful_difference, **kwargs)
-                all_pos_objs = all_pos_objs - neg_objs
-            return all_pos_objs
+
+                # for neg_ent, neg_prob in neg_objs:
+                #     for pos_ent in ent2probs:
+                #         ent2probs[pos_ent].append(neg_prob)
+                
+                all_pos_objs = all_pos_objs - {e for e, _ in neg_objs}
+
+            result = {(ent, np.min(ent2probs[ent])) for ent in all_pos_objs}
+            return result
         else:
             new_requirement = copy.deepcopy(requirement)
             if requirement['must include']:
@@ -654,7 +695,17 @@ class Intersection(MultipleSetQuery):
                         sub_objs = self.sub_queries[i].backward_sample(projs, rprojs, new_requirement, cumulative,
                                                                        meaningful_difference, **kwargs)
                     sub_obj_list.append(sub_objs)
-            return set.intersection(*sub_obj_list)
+
+            ent2probs = defaultdict(list)
+            sub_ent_list = []
+            for sub_objs in sub_obj_list:
+                sub_ent_list.append(set())
+                for e, prob in sub_objs:
+                    sub_ent_list[-1].add(e)
+                    ent2probs[e].append(prob)
+
+            result = {(e, np.min(ent2probs[e])) for e in set.intersection(*sub_ent_list)}
+            return result
 
     def random_query(self, projs, cumulative=False):
         sub_obj_list = []
@@ -680,9 +731,17 @@ class Union(MultipleSetQuery):
         return estimator.get_disjunction_embedding(embed_list, **kwargs)
 
     def deterministic_query(self, projs):
-        return set.union(
-            *(q.deterministic_query(projs) for q in self.sub_queries)
-        )
+        sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries]
+        ent2probs = defaultdict(list)
+        sub_ent_list = []
+        for sub_objs in sub_obj_list:
+            sub_ent_list.append(set())
+            for e, prob in sub_objs:
+                sub_ent_list[-1].add(e)
+                ent2probs[e].append(prob)
+
+        result = {(e, np.max(ent2probs[e])) for e in set.union(*sub_ent_list)}
+        return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False,
                         meaningful_difference: bool = False, **kwargs):
@@ -710,7 +769,17 @@ class Union(MultipleSetQuery):
                 sub_objs = query.backward_sample(projs, rprojs, normal_requirement, cumulative,
                                                  meaningful_difference, **kwargs)
                 sub_obj_list.append(sub_objs)
-        return set.union(*sub_obj_list)
+
+        ent2probs = defaultdict(list)
+        sub_ent_list = []
+        for sub_objs in sub_obj_list:
+            sub_ent_list.append(set())
+            for e, prob in sub_objs:
+                sub_ent_list[-1].add(e)
+                ent2probs[e].append(prob)
+
+        result = {(e, np.max(ent2probs[e])) for e in set.union(*sub_ent_list)}
+        return result
 
     def random_query(self, projs, cumulative=False):
         sub_obj_list = []
