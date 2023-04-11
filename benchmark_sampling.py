@@ -12,7 +12,7 @@ import pandas as pd
 from fol.foq_v2 import (DeMorgan_replacement, concate_iu_chains, parse_formula,
                         to_d, to_D, decompose_D, copy_query)
 from formula_generation import convert_to_dnf
-from utils.util import load_data_with_indexing
+from utils.util import load_data_with_indexing, round_answers_value
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--benchmark_name", type=str, default="benchmark")
@@ -20,7 +20,7 @@ parser.add_argument("--input_formula_file", type=str, default="outputs/test_gene
 parser.add_argument("--sample_size", default=5, type=int)
 parser.add_argument("--knowledge_graph", action="append", default=["NELL-1115"])
 parser.add_argument("--ncpus", type=int, default=1)
-parser.add_argument("--num_samples", type=int, default=5000)
+parser.add_argument("--num_samples", type=int, default=5)
 parser.add_argument("--meaningful_difference_setting", type=str, default='fixed_False')
 
 
@@ -78,7 +78,7 @@ def sample_by_row_final(row, easy_proj, hard_proj, hard_rproj, meaningful_differ
             break
     # for key in results:
         # parse_formula(row[key]).additive_ground(json.loads(results[key].dumps))
-    return list(easy_answers), list(hard_answers), results
+    return round_answers_value(list(easy_answers), 4), round_answers_value(list(hard_answers), 4), results
 
 
 if __name__ == "__main__":

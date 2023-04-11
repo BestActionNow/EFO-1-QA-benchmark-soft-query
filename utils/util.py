@@ -288,3 +288,6 @@ def load_data_with_indexing(data_path):
             proj_train, reverse_train,
             proj_valid, reverse_valid,
             proj_test, reverse_test)
+
+def round_answers_value(v_list, k):
+    return [(answer, round(prob, k)) for (answer, prob) in v_list]

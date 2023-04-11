@@ -272,8 +272,9 @@ class Entity(FirstOrderSetQuery):
 class Negation(FirstOrderSetQuery):
     __o__ = 'n'
 
-    def __init__(self, q: FirstOrderSetQuery = None):
+    def __init__(self, alpha: float, q: FirstOrderSetQuery = None):
         super().__init__()
+        self.alpha = alpha
         self.query = q
         
     def sort_sub(self):
@@ -281,13 +282,14 @@ class Negation(FirstOrderSetQuery):
 
     @property
     def formula(self):
-        return f"(n,{self.query.formula})"
+        return "(n-{:.3f},{:s})".format(self.alpha, self.query.formula)
 
     @property
     def dumps(self):
         dobject = {
             'o': self.__o__,
-            'a': json.loads(self.query.dumps)
+            'a': json.loads(self.query.dumps),
+            'r': "{:.3f}".format(self.alpha)
         }
         return json.dumps(dobject)
 
@@ -309,7 +311,7 @@ class Negation(FirstOrderSetQuery):
 
     def deterministic_query(self, projection):
         query_answers = self.query.deterministic_query(projection)
-        neg_prob = np.mean([prob for (e, prob) in query_answers]) 
+        neg_prob = func_g(np.mean([prob for (e, prob) in query_answers]), self.alpha)
         objects = projection.keys() - {e for (e, prob) in query_answers}
         objects = {(e, neg_prob) for e in objects}
         return objects
@@ -325,7 +327,7 @@ class Negation(FirstOrderSetQuery):
         new_requirement['must exclude'] = requirement['must include']
         query_answers = self.query.backward_sample(projs, rprojs, new_requirement, cumulative,
                                                          meaningful_difference, **kwargs)
-        neg_prob = np.mean([prob for (e, prob) in query_answers]) 
+        neg_prob = func_g(np.mean([prob for (e, prob) in query_answers]), self.alpha)
         objects = projs.keys() - {e for (e, prob) in query_answers}
         objects = {(e, neg_prob) for e in objects}
         return objects
@@ -347,8 +349,9 @@ class Projection(FirstOrderSetQuery):
     """
     __o__ = 'p'
 
-    def __init__(self, q: FirstOrderSetQuery = None):
+    def __init__(self, ff: float, q: FirstOrderSetQuery = None):
         super().__init__()
+        self.alpha = ff
         self.query = q
         self.relations = []
         self.trelations = None
@@ -359,13 +362,14 @@ class Projection(FirstOrderSetQuery):
 
     @property
     def formula(self):
-        return f"(p,{self.query.formula})"
+        return "(p-{:.3f},{})".format(self.alpha, self.query.formula)
 
     @property
     def dumps(self):
         dobject = {
             'o': self.__o__,
-            'a': [self.relations, json.loads(self.query.dumps)]
+            'a': [self.relations, json.loads(self.query.dumps)],
+            'f': "{:.3f}".format(self.alpha)
         }
         return json.dumps(dobject)
 
@@ -406,7 +410,7 @@ class Projection(FirstOrderSetQuery):
         for (par_entity, par_prob) in result:  # FIXME: there used to be a copy
             if isinstance(par_entity, int) and isinstance(par_prob, float):
                 for chi_entity in projs[par_entity][rel].keys():
-                    probs_dict[chi_entity].append(par_prob * projs[par_entity][rel][chi_entity])
+                    probs_dict[chi_entity].append(func_g(par_prob * projs[par_entity][rel][chi_entity], self.alpha))
         answer = set()
         for ent, probs_list in probs_dict.items():
             answer.add((ent, np.mean(probs_list)))
@@ -478,7 +482,7 @@ class Projection(FirstOrderSetQuery):
         for (par_entity, par_prob) in p_object:  # FIXME: there used to be a copy
             if isinstance(par_entity, int) and isinstance(par_prob, float):
                 for chi_entity in projs[par_entity][relation].keys():
-                    probs_dict[chi_entity].append(par_prob * projs[par_entity][relation][chi_entity])
+                    probs_dict[chi_entity].append(func_g(par_prob * projs[par_entity][relation][chi_entity], self.alpha))
         objects = set()
         for ent, probs_list in probs_dict.items():
             objects.add((ent, np.mean(probs_list)))
@@ -529,20 +533,26 @@ class Projection(FirstOrderSetQuery):
 
 
 class MultipleSetQuery(FirstOrderSetQuery):
-    def __init__(self, *queries: List[FirstOrderSetQuery]):
+    def __init__(self, beta, *queries: List[FirstOrderSetQuery]):
         self.sub_queries = queries
+        self.beta = beta
         
     def sort_sub(self):
-        self.sub_queries = sorted(self.sub_queries, key=lambda q: q.formula)
+        formulas = [q.formula for q in self.sub_queries]
+        zipped = zip(formulas, self.beta, self.sub_queries)
+        zipped = sorted(zipped, key = lambda tup: tup[0])
+        formulas, self.beta, self.sub_queries = zip(*zipped)
 
     @property
     def dumps(self):
         self.sort_sub()
+        beta_format = "-".join(["{:.3f}".format(ff) for ff in self.beta])
         dobject = {
             'o': self.__o__,
             'a': [
                 json.loads(subq.dumps) for subq in self.sub_queries
-            ]
+            ],
+            'f': beta_format
         }
         return json.dumps(dobject)
 
@@ -553,8 +563,10 @@ class MultipleSetQuery(FirstOrderSetQuery):
             symb = self.__o__.upper()
         else:
             symb = self.__o__
-        return "({},{})".format(
+        beta_format = "-".join(["{:.3f}".format(ff) for ff in self.beta])
+        return "({}-{},{})".format(
             symb,
+            beta_format,
             ",".join(q.formula for q in self.sub_queries)
         )
 
@@ -589,8 +601,8 @@ class MultipleSetQuery(FirstOrderSetQuery):
 class Intersection(MultipleSetQuery):
     __o__ = 'i'
 
-    def __init__(self, *queries: List[FirstOrderSetQuery]):
-        super().__init__(*queries)
+    def __init__(self, beta, *queries: List[FirstOrderSetQuery]):
+        super().__init__(beta, *queries)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -611,7 +623,7 @@ class Intersection(MultipleSetQuery):
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
 
-        result = {(e, np.min(ent2probs[e])) for e in set.intersection(*sub_ent_list)}
+        result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.intersection(*sub_ent_list)}
         return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative: bool = False,
@@ -704,7 +716,7 @@ class Intersection(MultipleSetQuery):
                     sub_ent_list[-1].add(e)
                     ent2probs[e].append(prob)
 
-            result = {(e, np.min(ent2probs[e])) for e in set.intersection(*sub_ent_list)}
+            result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.intersection(*sub_ent_list)}
             return result
 
     def random_query(self, projs, cumulative=False):
@@ -718,8 +730,8 @@ class Intersection(MultipleSetQuery):
 class Union(MultipleSetQuery):
     __o__ = 'u'
 
-    def __init__(self, *queries: List[FirstOrderSetQuery]):
-        super().__init__(*queries)
+    def __init__(self, beta, *queries: List[FirstOrderSetQuery]):
+        super().__init__(beta, *queries)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -740,7 +752,7 @@ class Union(MultipleSetQuery):
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
 
-        result = {(e, np.max(ent2probs[e])) for e in set.union(*sub_ent_list)}
+        result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.union(*sub_ent_list)}
         return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False,
@@ -778,7 +790,7 @@ class Union(MultipleSetQuery):
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
 
-        result = {(e, np.max(ent2probs[e])) for e in set.union(*sub_ent_list)}
+        result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.union(*sub_ent_list)}
         return result
 
     def random_query(self, projs, cumulative=False):
@@ -902,8 +914,8 @@ class Difference(FirstOrderSetQuery):
 class Multiple_Difference(MultipleSetQuery):
     __o__ = 'D'
 
-    def __init__(self, *queries: List[FirstOrderSetQuery]):
-        super().__init__(*queries)
+    def __init__(self, beta, *queries: List[FirstOrderSetQuery]):
+        super().__init__(beta, *queries)
         
     def sort_sub(self):
         lquery, rqueries = self.sub_queries[0], self.sub_queries[1:]
@@ -1046,7 +1058,19 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
             ops: operational string
             sub_range_list: a list of sub ranges
         """
-        ops = fosq_formula[i + 1]
+        if fosq_formula[i+1]  in  'Dde':
+            ops, ff = fosq_formula[i+1], 0.0
+        elif fosq_formula[i+1] in 'np':
+            ops = fosq_formula[i+1:fosq_formula.find(',', i+1)].split('-')
+            ops, ff = ops
+            ff = float(ff)
+        elif fosq_formula[i+1] in 'uiUI':
+            split_list = fosq_formula[i+1:fosq_formula.find(',', i+1)].split('-')
+            ops = split_list[0]
+            ff = [float(e) for e in split_list[1:]]
+        else:
+            raise NotImplemented
+
         level_stack = []
         sub_range_list = []
         for k in range(i + 1, j):
@@ -1068,7 +1092,7 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
             return identify_range(i + 1, j - 1)
         else:
             raise NotImplementedError(f"Ops {ops} is not defined")
-        return ops, sub_range_list
+        return ops, ff, sub_range_list
 
     _b = 0
     _e = len(fosq_formula) - 1
@@ -1077,10 +1101,10 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
         i, j = todo_ranges[-1]
 
         if (i, j) in cached_subranges:
-            ops, sub_range_list = cached_subranges[(i, j)]
+            ops, ff, sub_range_list = cached_subranges[(i, j)]
         else:
-            ops, sub_range_list = identify_range(i, j)
-            cached_subranges[(i, j)] = (ops, sub_range_list)
+            ops, ff, sub_range_list = identify_range(i, j)
+            cached_subranges[(i, j)] = (ops, ff, sub_range_list)
 
         valid_sub_ranges = True
         for _i, _j in sub_range_list:
@@ -1089,8 +1113,10 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
                 valid_sub_ranges = False
 
         if valid_sub_ranges is True:
-            sub_objects = [cached_objects[r] for r in sub_range_list]
-            obj = ops_dict[ops](*sub_objects)
+            args = [cached_objects[r] for r in sub_range_list]
+            if ops != 'e':
+                args = [ff] + args
+            obj = ops_dict[ops](*args)
             todo_ranges.pop(-1)
             cached_objects[(i, j)] = obj
     return cached_objects[_b, _e]
@@ -1117,7 +1143,7 @@ def binary_formula_iterator(depth=5,
 
     for op in op_candidates:
         if (op == 'e' and num_anchor_nodes == 1):
-            yield "(p,(e))"
+            yield "(p-0.000,(e))"
         elif op in 'np':
             if negation_length:
                 arg_candidate_iterator = binary_formula_iterator(
@@ -1125,7 +1151,8 @@ def binary_formula_iterator(depth=5,
                     num_anchor_nodes=num_anchor_nodes,
                     op_candidates=op_candidates_dict[op], negation_length=negation_length)
                 for f in arg_candidate_iterator:
-                    yield f"({op},{f})"
+                    alpha = random.uniform(0, 0.1)
+                    yield "({:s}-{:.3f},{:s})".format(op, alpha, f)
             else:
                 pass
         elif op in 'iu':
@@ -1146,7 +1173,9 @@ def binary_formula_iterator(depth=5,
                 )
                 for f1, f2 in product(arg1_candidate_iterator,
                                       arg2_candidate_iterator):
-                    yield f"({op},{f1},{f2})"
+                    beta = random.random()
+
+                    yield "({:s}-{:.3f}-{:.3f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
 
 
 def copy_query(q: FirstOrderSetQuery, deep=False) -> FirstOrderSetQuery:
@@ -1156,18 +1185,18 @@ def copy_query(q: FirstOrderSetQuery, deep=False) -> FirstOrderSetQuery:
         _q.entities = q.entities
         return _q
     elif op == 'p':
-        _q = Projection()
+        _q = Projection(q.alpha)
         _q.relations = q.relations
         if deep:
             _q.query = copy_query(q.query, deep)
         return _q
     elif op == 'n':
-        _q = Negation()
+        _q = Negation(q.alpha)
         if deep:
             _q.query = copy_query(q.query, deep)
         return _q
     elif op in 'uiD':
-        _q = ops_dict[op]()
+        _q = ops_dict[op](q.beta)
         if deep:
             _q.sub_queries = [copy_query(sq, deep) for sq in q.sub_queries]
         return _q
@@ -1217,13 +1246,13 @@ def negation_sink(fosq: FirstOrderSetQuery) -> FirstOrderSetQuery:
         # de Morgan rule 1
         if sub_q.__o__ == 'i':
             sub_sub_qs = sub_q.sub_queries
-            _fosq = Union(
-                *[Negation(q=negation_sink(q)) for q in sub_sub_qs]
+            _fosq = Union(sub_q.beta,
+                *[Negation(q.alpha, q=negation_sink(q)) for q in sub_sub_qs]
             )
         elif sub_q.__o__ == 'u':
             sub_sub_qs = sub_q.sub_queries
-            _fosq = Intersection(
-                *[Negation(q=negation_sink(q)) for q in sub_sub_qs]
+            _fosq = Intersection(sub_q.beta, 
+                *[Negation(q.alpha, q=negation_sink(q)) for q in sub_sub_qs]
             )
         else:
             _fosq = fosq
@@ -1262,9 +1291,9 @@ def DeMorgan_replacement(query):
     """
     if query.__o__ == 'u':
         sub_queries = [DeMorgan_replacement(q) for q in query.sub_queries]
-        negated_sub_queries = [Negation(q) for q in sub_queries]
-        inter = Intersection(*negated_sub_queries)
-        out = Negation(inter)
+        negated_sub_queries = [Negation(q.alpha, q) if (q.__o__ in "np") else Negation(0.0, q) for q in sub_queries ]
+        inter = Intersection(query.beta, *negated_sub_queries)
+        out = Negation(0.0, inter)
         return out
     elif query.__o__ == 'i':
         sub_queries = [DeMorgan_replacement(q) for q in query.sub_queries]
@@ -1302,7 +1331,7 @@ def union_bubble(fosq: FirstOrderSetQuery) -> FirstOrderSetQuery:
                 p = copy_query(fosq)
                 p.query = ssq
                 sub_queries.append(p)
-            return Union(*sub_queries)
+            return Union(sub_query.beta, *sub_queries)
         else:
             fosq.query = union_bubble(sub_query)
             return fosq
@@ -1322,9 +1351,10 @@ def union_bubble(fosq: FirstOrderSetQuery) -> FirstOrderSetQuery:
         if len(other_subq) == 1:
             C = other_subq[0]
         else:
-            C = Intersection(*other_subq)
-        _fosq = Union(
-            *[Intersection(q, copy_query(C, deep=True))
+            beta = [1.0/len(other_subq) for _ in range(len(other_subq))]
+            C = Intersection(beta, *other_subq)
+        _fosq = Union([1.0/len(union_subq.sub_queries) for _ in range(len(union_subq.sub_queries))], 
+            *[Intersection([0.5,0.5], q, copy_query(C, deep=True))
               for q in union_subq.sub_queries]
         )
         return union_bubble(_fosq)
@@ -1356,7 +1386,8 @@ def concate_iu_chains(fosq: FirstOrderSetQuery) -> FirstOrderSetQuery:
         sub_queries = other_queries
         for q in same_root_queries:
             sub_queries += q.sub_queries
-        _fosq = ops_dict[op](*sub_queries)
+        beta_list = [1.0 / len(sub_queries) for _ in range(len(sub_queries))]
+        _fosq = ops_dict[op](beta_list, *sub_queries)
         assert _fosq.formula != fosq.formula
         return concate_iu_chains(_fosq)
     if fosq.__o__ == 'd':
@@ -1381,12 +1412,12 @@ def to_D(fosq):
             fosq.sub_queries = not_negated
             return fosq
         if len(not_negated) > 1:
-            first_query = Intersection(*not_negated)
+            first_query = Intersection(fosq.beta, *not_negated)
         else:
             first_query = not_negated[0]
         rest_query = [q.query for q in negated]
         multi_diff_query = [first_query] + rest_query
-        fosq = Multiple_Difference(*multi_diff_query)
+        fosq = Multiple_Difference(fosq.beta, *multi_diff_query)
         return fosq
     elif fosq.__o__ == "u":
         sub_queries = [to_D(q) for q in fosq.sub_queries]
@@ -1487,3 +1518,12 @@ def count_entities(formula):
 
 def count_projections(formula):
     return Counter(formula)['p']
+
+def func_g(x, alpha):
+    if x > alpha:
+        return x
+    else:
+        return 0.0
+
+def func_avg(x_list, beta_list):
+    return np.sum([x_list[i]*beta_list[i] for i in range(len(x_list))])
