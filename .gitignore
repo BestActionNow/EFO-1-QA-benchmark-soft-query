@@ -1,6 +1,8 @@
 logs/
 *__pycache__*
-data
+data/benchmark
+data/processed
+data/raw
 *.zip
 *.sh
 .DS_Store
