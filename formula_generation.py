@@ -82,22 +82,22 @@ def normal_forms_generation(formula):
     # proj, rproj = load_graph()
     # query.backward_sample()
     result["original"] = formula
-    query = DeMorgan_replacement(parse_formula(formula))
-    DM_MultiI = concate_iu_chains(copy_query(query, True))
-    result["DeMorgan"] = query.formula
-    result["DeMorgan+MultiI"] = DM_MultiI.formula
-    query_dnf = convert_to_dnf(parse_formula(formula))
-    result["DNF"] = query_dnf.formula
-    query = to_d(parse_formula(formula))
-    result["diff"] = query.formula
-    query = to_d(parse_formula(query_dnf.formula))
-    result["DNF+diff"] = query.formula
-    query_dnf_multiiu = concate_iu_chains(parse_formula(query_dnf.formula))
-    result["DNF+MultiIU"] = query_dnf_multiiu.formula
-    query = to_D(parse_formula(result["DNF+MultiIU"]))
-    result["DNF+MultiIUD"] = query.formula
-    result["DNF+MultiIUd"] = decompose_D(
-                                parse_formula(result['DNF+MultiIUD'])).formula
+    # query = DeMorgan_replacement(parse_formula(formula))
+    # DM_MultiI = concate_iu_chains(copy_query(query, True))
+    # result["DeMorgan"] = query.formula
+    # result["DeMorgan+MultiI"] = DM_MultiI.formula
+    # query_dnf = convert_to_dnf(parse_formula(formula))
+    # result["DNF"] = query_dnf.formula
+    # query = to_d(parse_formula(formula))
+    # result["diff"] = query.formula
+    # query = to_d(parse_formula(query_dnf.formula))
+    # result["DNF+diff"] = query.formula
+    # query_dnf_multiiu = concate_iu_chains(parse_formula(query_dnf.formula))
+    # result["DNF+MultiIU"] = query_dnf_multiiu.formula
+    # query = to_D(parse_formula(result["DNF+MultiIU"]))
+    # result["DNF+MultiIUD"] = query.formula
+    # result["DNF+MultiIUd"] = decompose_D(
+    #                             parse_formula(result['DNF+MultiIUD'])).formula
     return result
 
 

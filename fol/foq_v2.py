@@ -231,7 +231,7 @@ class Entity(FirstOrderSetQuery):
 
     def deterministic_query(self, args, **kwargs):
         # TODO: change to return a list of set
-        return {(self.entities[0], 1.0)}
+        return {(self.entities[0], 1.0, 1.0)}
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, **kwargs):
         if requirement:
@@ -247,7 +247,7 @@ class Entity(FirstOrderSetQuery):
         else:
             self.entities = new_entity
 
-        return {(ent, 1.0) for ent in new_entity}
+        return {(ent, 1.0, 1.0) for ent in new_entity}
 
     def random_query(self, projs, cumulative=False):
         new_variable = random.sample(set(projs.keys()), 1)[0]
@@ -272,9 +272,9 @@ class Entity(FirstOrderSetQuery):
 class Negation(FirstOrderSetQuery):
     __o__ = 'n'
 
-    def __init__(self, alpha: float, q: FirstOrderSetQuery = None):
+    def __init__(self, epsilon: float, q: FirstOrderSetQuery = None):
         super().__init__()
-        self.alpha = alpha
+        self.epsilon = epsilon
         self.query = q
         
     def sort_sub(self):
@@ -282,14 +282,14 @@ class Negation(FirstOrderSetQuery):
 
     @property
     def formula(self):
-        return "(n-{:.3f},{:s})".format(self.alpha, self.query.formula)
+        return "(n-{:.3f},{:s})".format(self.epsilon, self.query.formula)
 
     @property
     def dumps(self):
         dobject = {
             'o': self.__o__,
             'a': json.loads(self.query.dumps),
-            'r': "{:.3f}".format(self.alpha)
+            'r': "{:.3f}".format(self.epsilon)
         }
         return json.dumps(dobject)
 
@@ -311,9 +311,9 @@ class Negation(FirstOrderSetQuery):
 
     def deterministic_query(self, projection):
         query_answers = self.query.deterministic_query(projection)
-        neg_prob = func_g(np.mean([prob for (e, prob) in query_answers]), self.alpha)
-        objects = projection.keys() - {e for (e, prob) in query_answers}
-        objects = {(e, neg_prob) for e in objects}
+        objects = projection.keys() - {e for (e, prob, impt) in query_answers}
+        impt_mean = np.mean([impt for (e, prob, impt) in query_answers])
+        objects = {(e, 1 - self.epsilon, impt_mean) for e in objects}
         return objects
 
     def backward_sample(self, projs, rprojs, requirement: bool = None, cumulative=False,
@@ -327,9 +327,9 @@ class Negation(FirstOrderSetQuery):
         new_requirement['must exclude'] = requirement['must include']
         query_answers = self.query.backward_sample(projs, rprojs, new_requirement, cumulative,
                                                          meaningful_difference, **kwargs)
-        neg_prob = func_g(np.mean([prob for (e, prob) in query_answers]), self.alpha)
-        objects = projs.keys() - {e for (e, prob) in query_answers}
-        objects = {(e, neg_prob) for e in objects}
+        objects = projs.keys() - {e for (e, prob, impt) in query_answers}
+        impt_mean = np.mean([impt for (e, prob, impt) in query_answers])
+        objects = {(e, 1 - self.epsilon, impt_mean) for e in objects}
         return objects
 
     def random_query(self, projs, cumulative=False):
@@ -407,13 +407,15 @@ class Projection(FirstOrderSetQuery):
         result = self.query.deterministic_query(projs)
 
         probs_dict = defaultdict(list)
-        for (par_entity, par_prob) in result:  # FIXME: there used to be a copy
+        impts_dict = defaultdict(list)
+        for (par_entity, par_prob, par_impt) in result:  # FIXME: there used to be a copy
             if isinstance(par_entity, int) and isinstance(par_prob, float):
                 for chi_entity in projs[par_entity][rel].keys():
-                    probs_dict[chi_entity].append(func_g(par_prob * projs[par_entity][rel][chi_entity], self.alpha))
+                    probs_dict[chi_entity].append(par_prob * func_g(projs[par_entity][rel][chi_entity], self.alpha))
+                    impts_dict[chi_entity].append(par_impt * projs[par_entity][rel][chi_entity])
         answer = set()
         for ent, probs_list in probs_dict.items():
-            answer.add((ent, np.mean(probs_list)))
+            answer.add((ent, np.mean(probs_list), np.mean(impts_dict[ent])))
         return answer
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, meaningful_difference: bool = False,
@@ -479,13 +481,15 @@ class Projection(FirstOrderSetQuery):
             raise ValueError
 
         probs_dict = defaultdict(list)
-        for (par_entity, par_prob) in p_object:  # FIXME: there used to be a copy
+        impts_dict = defaultdict(list)
+        for (par_entity, par_prob, par_impt) in p_object:  # FIXME: there used to be a copy
             if isinstance(par_entity, int) and isinstance(par_prob, float):
                 for chi_entity in projs[par_entity][relation].keys():
-                    probs_dict[chi_entity].append(func_g(par_prob * projs[par_entity][relation][chi_entity], self.alpha))
+                    probs_dict[chi_entity].append(par_prob * func_g(projs[par_entity][relation][chi_entity], self.alpha))
+                    impts_dict[chi_entity].append(par_impt * projs[par_entity][relation][chi_entity])
         objects = set()
         for ent, probs_list in probs_dict.items():
-            objects.add((ent, np.mean(probs_list)))
+            objects.add((ent, np.mean(probs_list), np.mean(impts_dict[ent])))  # compute probability from multiple paths
 
         if cumulative:
             self.relations.append(relation)
@@ -616,14 +620,16 @@ class Intersection(MultipleSetQuery):
     def deterministic_query(self, projs):
         sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries]
         ent2probs = defaultdict(list)
+        ent2impts = defaultdict(list)
         sub_ent_list = []
         for sub_objs in sub_obj_list:
             sub_ent_list.append(set())
-            for e, prob in sub_objs:
+            for e, prob, impt in sub_objs:
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
+                ent2impts[e].append(impt)
 
-        result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.intersection(*sub_ent_list)}
+        result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.intersection(*sub_ent_list)}
         return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative: bool = False,
@@ -632,10 +638,11 @@ class Intersection(MultipleSetQuery):
         if not requirement:
             requirement = defaultdict(set)
             requirement['must include'] = {random.randrange(0, len(projs.keys()))}
-        positive_subqueries, neg_subqueries = [], []
+        positive_subqueries, neg_subqueries, neg_subqueries_epsilon = [], [], []
         for sub_query in self.sub_queries:
             if sub_query.__o__ == 'n':
                 neg_subqueries.append(sub_query.query)
+                neg_subqueries_epsilon.append(sub_query.epsilon)
             else:
                 positive_subqueries.append(sub_query)
         if meaningful_difference and len(positive_subqueries) > 0:
@@ -647,6 +654,7 @@ class Intersection(MultipleSetQuery):
 
             pos_ent_list = []
             ent2probs = defaultdict(list)
+            ent2impts = defaultdict(list)
             for i in range(len(positive_subqueries)):
                 if i == choose_formula:
                     pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, positive_choose_requirement,
@@ -657,8 +665,9 @@ class Intersection(MultipleSetQuery):
                 pos_ent_set = {e for e,_ in pos_objs}
                 pos_ent_list.append(pos_ent_set)
 
-                for ent, prob in pos_objs:
+                for ent, prob, impt in pos_objs:
                     ent2probs[ent].append(prob)
+                    ent2impts[ent].append(impt)
             all_pos_objs = set.intersection(*pos_ent_list)
 
             negative_requirement = defaultdict(set)
@@ -681,13 +690,16 @@ class Intersection(MultipleSetQuery):
                     neg_objs = neg_subqueries[i].backward_sample(projs, rprojs, negative_requirement, cumulative,
                                                                  meaningful_difference, **kwargs)
 
-                # for neg_ent, neg_prob in neg_objs:
-                #     for pos_ent in ent2probs:
-                #         ent2probs[pos_ent].append(neg_prob)
+                for ent in all_pos_objs:
+                    ent2probs[ent].append(1 - neg_subqueries_epsilon[i].epsilon)
+                
+                for _, prob, impt in neg_objs:
+                    for ent in all_pos_objs:
+                        ent2impts[ent].append(impt)
                 
                 all_pos_objs = all_pos_objs - {e for e, _ in neg_objs}
 
-            result = {(ent, np.min(ent2probs[ent])) for ent in all_pos_objs}
+            result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in all_pos_objs}
             return result
         else:
             new_requirement = copy.deepcopy(requirement)
@@ -709,14 +721,16 @@ class Intersection(MultipleSetQuery):
                     sub_obj_list.append(sub_objs)
 
             ent2probs = defaultdict(list)
+            ent2impts = defaultdict(list)
             sub_ent_list = []
             for sub_objs in sub_obj_list:
                 sub_ent_list.append(set())
-                for e, prob in sub_objs:
+                for e, prob, impt in sub_objs:
                     sub_ent_list[-1].add(e)
                     ent2probs[e].append(prob)
+                    ent2impts[e].append(impt)
 
-            result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.intersection(*sub_ent_list)}
+            result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.intersection(*sub_ent_list)}
             return result
 
     def random_query(self, projs, cumulative=False):
@@ -745,14 +759,16 @@ class Union(MultipleSetQuery):
     def deterministic_query(self, projs):
         sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries]
         ent2probs = defaultdict(list)
+        ent2impts = defaultdict(list)
         sub_ent_list = []
         for sub_objs in sub_obj_list:
             sub_ent_list.append(set())
-            for e, prob in sub_objs:
+            for e, prob, impt in sub_objs:
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
-
-        result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.union(*sub_ent_list)}
+                ent2impts[e].append(impt)
+        # self.beta defaults to be 1.0
+        result = {(e, np.max(ent2probs[e]), np.max(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.union(*sub_ent_list)}
         return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False,
@@ -783,14 +799,16 @@ class Union(MultipleSetQuery):
                 sub_obj_list.append(sub_objs)
 
         ent2probs = defaultdict(list)
+        ent2impts = defaultdict(list)
         sub_ent_list = []
         for sub_objs in sub_obj_list:
             sub_ent_list.append(set())
-            for e, prob in sub_objs:
+            for e, prob, impt in sub_objs:
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
+                ent2impts[e].append(impt)
 
-        result = {(e, func_avg(ent2probs[e], self.beta)) for e in set.union(*sub_ent_list)}
+        result = {(e, np.max(ent2probs[e]), np.max(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.union(*sub_ent_list)}
         return result
 
     def random_query(self, projs, cumulative=False):
@@ -1151,8 +1169,12 @@ def binary_formula_iterator(depth=5,
                     num_anchor_nodes=num_anchor_nodes,
                     op_candidates=op_candidates_dict[op], negation_length=negation_length)
                 for f in arg_candidate_iterator:
-                    alpha = random.uniform(0, 0.1)
-                    yield "({:s}-{:.3f},{:s})".format(op, alpha, f)
+                    if op in 'p':
+                        alpha = random.uniform(0, 0.1)
+                        yield "({:s}-{:.3f},{:s})".format(op, alpha, f)
+                    elif op in 'n':
+                        epsilon = random.uniform(0, 0.2)
+                        yield "({:s}-{:.3f},{:s})".format(op, epsilon, f)
             else:
                 pass
         elif op in 'iu':
@@ -1173,9 +1195,12 @@ def binary_formula_iterator(depth=5,
                 )
                 for f1, f2 in product(arg1_candidate_iterator,
                                       arg2_candidate_iterator):
-                    beta = random.random()
-
-                    yield "({:s}-{:.3f}-{:.3f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
+                    if op in 'i':
+                        beta = random.random()
+                        yield "({:s}-{:.3f}-{:.3f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
+                    elif op in 'u':
+                        beta = 0.5
+                        yield "({:s}-{:.3f}-{:.3f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
 
 
 def copy_query(q: FirstOrderSetQuery, deep=False) -> FirstOrderSetQuery:
@@ -1191,7 +1216,7 @@ def copy_query(q: FirstOrderSetQuery, deep=False) -> FirstOrderSetQuery:
             _q.query = copy_query(q.query, deep)
         return _q
     elif op == 'n':
-        _q = Negation(q.alpha)
+        _q = Negation(q.epsilon)
         if deep:
             _q.query = copy_query(q.query, deep)
         return _q
@@ -1291,7 +1316,7 @@ def DeMorgan_replacement(query):
     """
     if query.__o__ == 'u':
         sub_queries = [DeMorgan_replacement(q) for q in query.sub_queries]
-        negated_sub_queries = [Negation(q.alpha, q) if (q.__o__ in "np") else Negation(0.0, q) for q in sub_queries ]
+        negated_sub_queries = [Negation(q.epsilon, q) if (q.__o__ in "np") else Negation(0.0, q) for q in sub_queries ]
         inter = Intersection(query.beta, *negated_sub_queries)
         out = Negation(0.0, inter)
         return out
@@ -1524,6 +1549,3 @@ def func_g(x, alpha):
         return x
     else:
         return 0.0
-
-def func_avg(x_list, beta_list):
-    return np.sum([x_list[i]*beta_list[i] for i in range(len(x_list))])

@@ -290,4 +290,4 @@ def load_data_with_indexing(data_path):
             proj_test, reverse_test)
 
 def round_answers_value(v_list, k):
-    return [(answer, round(prob, k)) for (answer, prob) in v_list]
+    return [(answer, round(prob, k), round(impt, k)) for (answer, prob, impt) in v_list]

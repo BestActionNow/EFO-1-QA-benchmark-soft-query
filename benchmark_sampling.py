@@ -29,15 +29,15 @@ def normal_forms_transformation(query):
     # proj, rproj = load_graph()
     # query.backward_sample()
     result["original"] = query
-    result["DeMorgan"] = DeMorgan_replacement(copy_query(result["original"], True))
-    result['DeMorgan+MultiI'] = concate_iu_chains(copy_query(result["DeMorgan"], True))
-    result["DNF"] = convert_to_dnf(copy_query(result["original"], True))
-    result["diff"] = to_d(copy_query(result["original"], True))
-    result["DNF+diff"] = to_d(copy_query(result["DNF"], True))
-    result["DNF+MultiIU"] = concate_iu_chains(copy_query(result["DNF"], True))
-    result['DNF+MultiIU'].sort_sub()
-    result["DNF+MultiIUD"] = to_D(copy_query(result["DNF+MultiIU"], True))
-    result["DNF+MultiIUd"] = decompose_D(copy_query(result["DNF+MultiIUD"], True))
+    # result["DeMorgan"] = DeMorgan_replacement(copy_query(result["original"], True))
+    # result['DeMorgan+MultiI'] = concate_iu_chains(copy_query(result["DeMorgan"], True))
+    # result["DNF"] = convert_to_dnf(copy_query(result["original"], True))
+    # result["diff"] = to_d(copy_query(result["original"], True))
+    # result["DNF+diff"] = to_d(copy_query(result["DNF"], True))
+    # result["DNF+MultiIU"] = concate_iu_chains(copy_query(result["DNF"], True))
+    # result['DNF+MultiIU'].sort_sub()
+    # result["DNF+MultiIUD"] = to_D(copy_query(result["DNF+MultiIU"], True))
+    # result["DNF+MultiIUd"] = decompose_D(copy_query(result["DNF+MultiIUD"], True))
     return result
 
 
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     beta_data_folders = {"FB15k-237": "data/FB15k-237-betae",
                          "FB15k": "data/FB15k-betae",
                          "NELL-995": "data/NELL-betae",
-                         "NELL-1115": "data/NELL-1115-betae"}
+                         "NELL-1115": "data/processed/NELL-1115-betae"}
     for kg in args.knowledge_graph:
         data_path = beta_data_folders[kg]
         ent2id, rel2id, \
@@ -101,6 +101,8 @@ if __name__ == "__main__":
         os.makedirs(out_folder, exist_ok=True)
 
         for i, row in tqdm(df.iterrows(), total=len(df)):
+            if i > 5:
+                break
             fid = row.formula_id
             data = defaultdict(list)
 
