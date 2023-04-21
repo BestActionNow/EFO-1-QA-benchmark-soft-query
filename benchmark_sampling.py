@@ -101,8 +101,6 @@ if __name__ == "__main__":
         os.makedirs(out_folder, exist_ok=True)
 
         for i, row in tqdm(df.iterrows(), total=len(df)):
-            if i > 5:
-                break
             fid = row.formula_id
             data = defaultdict(list)
 
