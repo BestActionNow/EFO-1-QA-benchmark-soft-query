@@ -312,7 +312,7 @@ class Negation(FirstOrderSetQuery):
     def deterministic_query(self, projection):
         query_answers = self.query.deterministic_query(projection)
         objects = projection.keys() - {e for (e, prob, impt) in query_answers}
-        impt_mean = np.mean([impt for (e, prob, impt) in query_answers])
+        impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
         objects = {(e, 1 - self.epsilon, impt_mean) for e in objects}
         return objects
 
@@ -328,7 +328,7 @@ class Negation(FirstOrderSetQuery):
         query_answers = self.query.backward_sample(projs, rprojs, new_requirement, cumulative,
                                                          meaningful_difference, **kwargs)
         objects = projs.keys() - {e for (e, prob, impt) in query_answers}
-        impt_mean = np.mean([impt for (e, prob, impt) in query_answers])
+        impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
         objects = {(e, 1 - self.epsilon, impt_mean) for e in objects}
         return objects
 
@@ -409,10 +409,10 @@ class Projection(FirstOrderSetQuery):
         probs_dict = defaultdict(list)
         impts_dict = defaultdict(list)
         for (par_entity, par_prob, par_impt) in result:  # FIXME: there used to be a copy
-            if isinstance(par_entity, int) and isinstance(par_prob, float):
+            if isinstance(par_entity, int) and isinstance(par_prob, float) and isinstance(par_impt, float):
                 for chi_entity in projs[par_entity][rel].keys():
                     probs_dict[chi_entity].append(par_prob * func_g(projs[par_entity][rel][chi_entity], self.alpha))
-                    impts_dict[chi_entity].append(par_impt * projs[par_entity][rel][chi_entity])
+                    impts_dict[chi_entity].append(par_impt * func_g(projs[par_entity][rel][chi_entity], 0.0))
         answer = set()
         for ent, probs_list in probs_dict.items():
             answer.add((ent, np.mean(probs_list), np.mean(impts_dict[ent])))
@@ -483,13 +483,13 @@ class Projection(FirstOrderSetQuery):
         probs_dict = defaultdict(list)
         impts_dict = defaultdict(list)
         for (par_entity, par_prob, par_impt) in p_object:  # FIXME: there used to be a copy
-            if isinstance(par_entity, int) and isinstance(par_prob, float):
+            if isinstance(par_entity, int) and isinstance(par_prob, float) and isinstance(par_impt, float):
                 for chi_entity in projs[par_entity][relation].keys():
                     probs_dict[chi_entity].append(par_prob * func_g(projs[par_entity][relation][chi_entity], self.alpha))
-                    impts_dict[chi_entity].append(par_impt * projs[par_entity][relation][chi_entity])
+                    impts_dict[chi_entity].append(par_impt * func_g(projs[par_entity][relation][chi_entity], 0.0))
         objects = set()
         for ent, probs_list in probs_dict.items():
-            objects.add((ent, np.mean(probs_list), np.mean(impts_dict[ent])))  # compute probability from multiple paths
+            objects.add((ent, np.max(probs_list), np.max(impts_dict[ent])))  # compute probability from multiple paths
 
         if cumulative:
             self.relations.append(relation)
