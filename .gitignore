@@ -1,8 +1,8 @@
 logs/
 *__pycache__*
 data/benchmark
-data/processed
-data/raw
+data/processed/NELL-1115-betae
+data/raw/NELL-1115-betae
 *.zip
 *.sh
 .DS_Store

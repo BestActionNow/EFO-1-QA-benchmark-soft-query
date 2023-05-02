@@ -415,7 +415,7 @@ class Projection(FirstOrderSetQuery):
                     impts_dict[chi_entity].append(par_impt * func_g(projs[par_entity][rel][chi_entity], 0.0))
         answer = set()
         for ent, probs_list in probs_dict.items():
-            answer.add((ent, np.mean(probs_list), np.mean(impts_dict[ent])))
+            answer.add((ent, np.max(probs_list), np.max(impts_dict[ent])))
         return answer
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, meaningful_difference: bool = False,
