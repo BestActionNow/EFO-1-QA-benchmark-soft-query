@@ -1170,7 +1170,7 @@ def binary_formula_iterator(depth=5,
                     op_candidates=op_candidates_dict[op], negation_length=negation_length)
                 for f in arg_candidate_iterator:
                     if op in 'p':
-                        alpha = random.uniform(0, 0.1)
+                        alpha = random.uniform(0, 0.1) #Why random?
                         yield "({:s}-{:.3f},{:s})".format(op, alpha, f)
                     elif op in 'n':
                         epsilon = random.uniform(0, 0.2)
