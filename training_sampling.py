@@ -134,7 +134,7 @@ if __name__ == "__main__":
                         pd.DataFrame(data).to_csv(osp.join(out_folder, f"{mode}-{fid}.csv"), index=False)
                         number_queries_1p = len(data["answer_set"])
                         continue
-                    args.num_samples = int(number_queries_1p * 0.005 * row.number / 100000)
+                    args.num_samples = int(number_queries_1p * row.number / 100000)
                 else:
                     if row.original == '(p-0.000,(e))':
                         args.num_samples = int(number_queries_1p * 0.3)
