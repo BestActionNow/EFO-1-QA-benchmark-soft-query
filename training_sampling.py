@@ -15,7 +15,7 @@ from formula_generation import convert_to_dnf
 from utils.util import load_data_with_indexing, round_answers_value
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--benchmark_name", type=str, default="training")
+parser.add_argument("--benchmark_name", type=str, default="ranking")
 parser.add_argument("--input_formula_file", type=str, default="outputs")
 parser.add_argument("--sample_size", default=10000, type=int)
 parser.add_argument("--knowledge_graph", action="append", default=["ppi5k"])
@@ -94,12 +94,45 @@ def sample_by_row_final(row, easy_proj, hard_proj, hard_rproj, meaningful_differ
         assert full_answers == query_instance.deterministic_query(hard_proj)
         easy_answers = query_instance.deterministic_query(easy_proj)
         hard_answers = full_answers.difference(easy_answers)
+        assert not easy_answers.intersection(hard_answers)
         results = normal_forms_transformation(query_instance)
+        rounded_easy_answer = round_answers_value(list(easy_answers), 4)
+        rounded_hard_answer = round_answers_value(list(hard_answers), 4)
+        if set(rounded_easy_answer).intersection(rounded_hard_answer):
+            easy_answers = query_instance.deterministic_query(easy_proj)
+            full_answers == query_instance.deterministic_query(hard_proj)
+            hard_answers = full_answers.difference(easy_answers)
+            continue
         if 0 < len(hard_answers) <= 100:
             break
+
     # for key in results:
         # parse_formula(row[key]).additive_ground(json.loads(results[key].dumps))
-    return round_answers_value(list(easy_answers), 4), round_answers_value(list(hard_answers), 4), results
+    return rounded_easy_answer, rounded_hard_answer, results
+
+
+def sample_by_row_final_ranking(row, proj, rproj, meaningful_difference_setting: str = 'mixed'):
+    while True:
+        query_instance = parse_formula(row.original)
+        if meaningful_difference_setting == 'mixed':
+            formula = query_instance.formula
+            meaningful_difference = ('d' in formula or 'D' in formula or 'n' in formula)
+        elif meaningful_difference_setting == 'fixed_True':
+            meaningful_difference = True
+        elif meaningful_difference_setting == 'fixed_False':
+            meaningful_difference = False
+        else:
+            assert False, 'Invalid setting!'
+        full_answers = query_instance.backward_sample(proj, rproj,
+                                                      meaningful_difference=meaningful_difference)
+        assert full_answers == query_instance.deterministic_query(proj)
+        results = normal_forms_transformation(query_instance)
+        if 0 < len(full_answers) <= 100:
+            break
+
+    # for key in results:
+        # parse_formula(row[key]).additive_ground(json.loads(results[key].dumps))
+    return full_answers, results
 
 
 if __name__ == "__main__":
@@ -134,7 +167,7 @@ if __name__ == "__main__":
                         pd.DataFrame(data).to_csv(osp.join(out_folder, f"{mode}-{fid}.csv"), index=False)
                         number_queries_1p = len(data["answer_set"])
                         continue
-                    args.num_samples = int(number_queries_1p * row.number / 100000)
+                    args.num_samples = int(number_queries_1p * row.number / 1000000)
                 else:
                     if row.original == '(p-0.000,(e))':
                         args.num_samples = int(number_queries_1p * 0.3)
@@ -174,17 +207,19 @@ if __name__ == "__main__":
                     sampled_query = 0
                     while sampled_query < args.num_samples:
                         if mode == "train":
-                            easy_answers, hard_answers, results = sample_by_row_final(
-                                row, proj_train, proj_valid, reverse_test,
+                            train_answers, results = sample_by_row_final_ranking(
+                                row, proj_train, reverse_test,
                                 meaningful_difference_setting=args.meaningful_difference_setting)
+                            if not 0 < len(train_answers):
+                                continue
                         else:
                             if mode == "valid":
-                                easy_answers, hard_answers, results = sample_by_row_final(
-                                    row, proj_train, proj_valid, reverse_test,
+                                valid_answers, results = sample_by_row_final_ranking(
+                                    row, proj_valid, reverse_test,
                                     meaningful_difference_setting=args.meaningful_difference_setting)
                             elif mode == "test":
-                                easy_answers, hard_answers, results = sample_by_row_final(
-                                    row, proj_train, proj_valid, reverse_test,
+                                test_answers, results = sample_by_row_final_ranking(
+                                    row, proj_test, reverse_test,
                                     meaningful_difference_setting=args.meaningful_difference_setting)
 
                         if results['original'].dumps in generated:
@@ -193,10 +228,11 @@ if __name__ == "__main__":
                             generated.add(results['original'].dumps)
                             sampled_query += 1
                             if mode == "train":
-                                data['answer_set'].append(easy_answers)
-                            else:
-                                data['easy_answers'].append(easy_answers)
-                                data['hard_answers'].append(hard_answers)
+                                data['answer_set'].append(train_answers)
+                            elif mode == "valid":
+                                data['answer_set'].append(valid_answers)
+                            elif mode == "valid":
+                                data['answer_set'].append(test_answers)
                         for k in results:
                             data[k].append(results[k].dumps)
 
