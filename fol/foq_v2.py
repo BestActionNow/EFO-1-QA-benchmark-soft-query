@@ -97,7 +97,7 @@ class FirstOrderSetQuery(ABC):
         pass
 
     @abstractmethod
-    def backward_sample(self, projs, rprojs, requirement=None,
+    def backward_sample(self, projs, rprojs, rel2percentile=None,  requirement=None,
                         cumulative: bool = False, meaningful_difference: bool = False, **kwargs):
         """
         A function used to ground a query, the backward sampling strategy is used to ensure that there are always an
@@ -198,7 +198,7 @@ class Entity(FirstOrderSetQuery):
         }
         return json.dumps(dobject)
 
-    def additive_ground(self, dobject: Dobject, rel2percentile=None):
+    def additive_ground(self, dobject: Dobject):
         obj, entity_list = dobject['o'], dobject['a']
         assert obj == self.__o__
         assert all(isinstance(i, int) for i in entity_list)
@@ -233,7 +233,7 @@ class Entity(FirstOrderSetQuery):
         # TODO: change to return a list of set
         return {(self.entities[0], 1.0, 1.0)}
 
-    def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, **kwargs):
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement=None, cumulative=False, **kwargs):
         if requirement:
             if requirement['must include']:
                 new_entity = list(requirement['must include'])
@@ -272,30 +272,31 @@ class Entity(FirstOrderSetQuery):
 class Negation(FirstOrderSetQuery):
     __o__ = 'n'
 
-    def __init__(self, q: FirstOrderSetQuery = None):
+    def __init__(self, epsilon: float, q: FirstOrderSetQuery = None):
         super().__init__()
+        self.epsilon = epsilon
         self.query = q
-
         
     def sort_sub(self):
         self.query.sort_sub()
 
     @property
     def formula(self):
-        return "(n,{:s})".format(self.query.formula)
+        return "(n-{:.1f},{:s})".format(self.epsilon, self.query.formula)
 
     @property
     def dumps(self):
         dobject = {
             'o': self.__o__,
             'a': json.loads(self.query.dumps),
+            'r': "{:.3f}".format(self.epsilon)
         }
         return json.dumps(dobject)
 
-    def additive_ground(self, dobject: Dobject, rel2percentile=None):
+    def additive_ground(self, dobject: Dobject):
         obj, sub_dobject = dobject['o'], dobject['a']
         assert obj == self.__o__
-        self.query.additive_ground(sub_dobject, rel2percentile)
+        self.query.additive_ground(sub_dobject)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -310,12 +311,12 @@ class Negation(FirstOrderSetQuery):
 
     def deterministic_query(self, projection):
         query_answers = self.query.deterministic_query(projection)
-#        objects = projection.keys() - {e for (e, prob, impt) in query_answers}
-#        impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
-        objects = query_answers
+        objects = projection.keys() - {e for (e, prob, impt) in query_answers}
+        impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
+        objects = {(e, 1 - self.epsilon, impt_mean) for e in objects}
         return objects
 
-    def backward_sample(self, projs, rprojs, requirement: bool = None, cumulative=False,
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement: bool = None, cumulative=False,
                         meaningful_difference: bool = False, **kwargs):
         # assert meaningful_difference == False  This is not true only in DM-like queries
         if not requirement:
@@ -324,7 +325,7 @@ class Negation(FirstOrderSetQuery):
         new_requirement = defaultdict(set)
         new_requirement['must include'] = requirement['must exclude']
         new_requirement['must exclude'] = requirement['must include']
-        query_answers = self.query.backward_sample(projs, rprojs, new_requirement, cumulative,
+        query_answers = self.query.backward_sample(projs, rprojs, rel2percentile, new_requirement, cumulative,
                                                          meaningful_difference, **kwargs)
         objects = projs.keys() - {e for (e, prob, impt) in query_answers}
         impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
@@ -372,16 +373,12 @@ class Projection(FirstOrderSetQuery):
         }
         return json.dumps(dobject)
 
-    def additive_ground(self, dobject: Dobject, rel2percentile=None):
+    def additive_ground(self, dobject: Dobject, per):
         obj, (relation_list, sub_dobject) = dobject['o'], dobject['a']
         assert obj == self.__o__
         assert all(isinstance(i, int) for i in relation_list)
         self.relations.extend(relation_list)
-        if self.alpha > 1:
-            self.alpha = rel2percentile[f"{self.relations[0]}"][int(self.alpha)//25-1]
-        elif 0 < float(dobject["f"]) <=1:
-            self.alpha = float(dobject["f"])
-        self.query.additive_ground(sub_dobject, rel2percentile)
+        self.query.additive_ground(sub_dobject)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -418,11 +415,10 @@ class Projection(FirstOrderSetQuery):
                     impts_dict[chi_entity].append(par_impt * func_g(projs[par_entity][rel][chi_entity], 0.0))
         answer = set()
         for ent, probs_list in probs_dict.items():
- #           if np.max(probs_list) > 0.0:
-                answer.add((ent, np.max(probs_list), np.max(impts_dict[ent])))
+            answer.add((ent, np.max(probs_list), np.max(impts_dict[ent])))
         return answer
 
-    def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, meaningful_difference: bool = False,
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement=None, cumulative=False, meaningful_difference: bool = False,
                         **kwargs):
         # since the projection[next_point][self.rel] may contains essential_point even if not starting from it
         # This issue can not be totally solved since the p_object contains other entity than parent
@@ -479,11 +475,17 @@ class Projection(FirstOrderSetQuery):
 
         new_requirement = defaultdict(set)
         new_requirement['must include'] = {parent}
-        p_object = self.query.backward_sample(projs, rprojs, requirement=new_requirement, cumulative=cumulative,
+        p_object = self.query.backward_sample(projs, rprojs, rel2percentile, requirement=new_requirement, cumulative=cumulative,
                                               meaningful_difference=meaningful_difference, **kwargs)
         if None in p_object:  # FIXME: why this is a none in return type
             raise ValueError
 
+        if cumulative:
+            self.relations.append(relation)
+        else:
+            self.relations = [relation]
+            self.alpha = rel2percentile[f"{relation}"][int(self.alpha) // 25 - 1]
+        
         probs_dict = defaultdict(list)
         impts_dict = defaultdict(list)
         for (par_entity, par_prob, par_impt) in p_object:  # FIXME: there used to be a copy
@@ -495,10 +497,6 @@ class Projection(FirstOrderSetQuery):
         for ent, probs_list in probs_dict.items():
             objects.add((ent, np.max(probs_list), np.max(impts_dict[ent])))  # compute probability from multiple paths
 
-        if cumulative:
-            self.relations.append(relation)
-        else:
-            self.relations = [relation]
 
         return objects
 
@@ -578,12 +576,12 @@ class MultipleSetQuery(FirstOrderSetQuery):
             ",".join(q.formula for q in self.sub_queries)
         )
 
-    def additive_ground(self, dobject: Dobject, rel2percentile=None):
+    def additive_ground(self, dobject: Dobject):
         obj, sub_dobjects = dobject['o'], dobject['a']
         assert obj == self.__o__
         assert len(self.sub_queries) == len(sub_dobjects)
         for q, dobj in zip(self.sub_queries, sub_dobjects):
-            q.additive_ground(dobj, rel2percentile)
+            q.additive_ground(dobj)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -622,32 +620,21 @@ class Intersection(MultipleSetQuery):
         return estimator.get_conjunction_embedding(embed_list, **kwargs)
 
     def deterministic_query(self, projs):
-        pos_sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries if q.__o__ != "n"]
-        neg_sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries if q.__o__  == "n"]
+        sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries]
         ent2probs = defaultdict(list)
         ent2impts = defaultdict(list)
         sub_ent_list = []
-        for sub_objs in pos_sub_obj_list:
+        for sub_objs in sub_obj_list:
             sub_ent_list.append(set())
             for e, prob, impt in sub_objs:
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
                 ent2impts[e].append(impt)
-        candidate_answer = None
-        if len(sub_ent_list) > 1:
-            candidate_answer = set.intersection(*sub_ent_list)
-        else:
-            candidate_answer = sub_ent_list[0]
-    
-        if neg_sub_obj_list: # In our setting, only a edge is negation.
-            for e, prob, impt in neg_sub_obj_list[0]:
-                if e in candidate_answer:
-                    ent2impts[e].append(-impt)
-        result = {(e, np.min(ent2probs[e]), np.sum(np.array(ent2impts[e]) * np.array(self.beta)[:len(ent2impts[e])])) for e in candidate_answer}
-#        result = {element for element in result if element[-1]>0}
+
+        result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.intersection(*sub_ent_list)}
         return result
 
-    def backward_sample(self, projs, rprojs, requirement=None, cumulative: bool = False,
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement=None, cumulative: bool = False,
                         meaningful_difference: bool = False, **kwargs):
         sub_obj_list, pos_obj_list, neg_obj_list = [], [], []
         if not requirement:
@@ -657,6 +644,7 @@ class Intersection(MultipleSetQuery):
         for sub_query in self.sub_queries:
             if sub_query.__o__ == 'n':
                 neg_subqueries.append(sub_query.query)
+                neg_subqueries_epsilon.append(sub_query.epsilon)
             else:
                 positive_subqueries.append(sub_query)
         if meaningful_difference and len(positive_subqueries) > 0:
@@ -671,12 +659,12 @@ class Intersection(MultipleSetQuery):
             ent2impts = defaultdict(list)
             for i in range(len(positive_subqueries)):
                 if i == choose_formula:
-                    pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, positive_choose_requirement,
+                    pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, rel2percentile, positive_choose_requirement,
                                                                       cumulative, meaningful_difference, **kwargs)
                 else:
-                    pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, positive_requirement,
+                    pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, rel2percentile, positive_requirement,
                                                                       cumulative, meaningful_difference, **kwargs)
-                pos_ent_set = {e for e,_,_ in pos_objs}
+                pos_ent_set = {e for e,_ in pos_objs}
                 pos_ent_list.append(pos_ent_set)
 
                 for ent, prob, impt in pos_objs:
@@ -704,21 +692,22 @@ class Intersection(MultipleSetQuery):
                     neg_objs = neg_subqueries[i].backward_sample(projs, rprojs, negative_requirement, cumulative,
                                                                  meaningful_difference, **kwargs)
 
-#                for ent in all_pos_objs:
-#                    ent2probs[ent].append(1 - neg_subqueries_epsilon[i].epsilon)
+                for ent in all_pos_objs:
+                    ent2probs[ent].append(1 - neg_subqueries_epsilon[i].epsilon)
                 
-                for n_e, prob, impt in neg_objs:
-                    if n_e in all_pos_objs:
-                        ent2impts[n_e].append(-impt)
+                for _, prob, impt in neg_objs:
+                    for ent in all_pos_objs:
+                        ent2impts[ent].append(impt)
+                
+                all_pos_objs = all_pos_objs - {e for e, _ in neg_objs}
 
-            result = {(e, np.min(ent2probs[e]), np.sum(np.array(ent2impts[e]) * np.array(self.beta)[:len(ent2impts[e])])) for e in all_pos_objs}
-            # the importance should add when i.
+            result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in all_pos_objs}
             return result
         else:
             new_requirement = copy.deepcopy(requirement)
             if requirement['must include']:
                 for sub_query in self.sub_queries:
-                    sub_objs = sub_query.backward_sample(projs, rprojs, new_requirement, cumulative,
+                    sub_objs = sub_query.backward_sample(projs, rprojs, rel2percentile, new_requirement, cumulative,
                                                          meaningful_difference, **kwargs)
                     sub_obj_list.append(sub_objs)
             else:
@@ -784,7 +773,7 @@ class Union(MultipleSetQuery):
         result = {(e, np.max(ent2probs[e]), np.max(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.union(*sub_ent_list)}
         return result
 
-    def backward_sample(self, projs, rprojs, requirement=None, cumulative=False,
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement=None, cumulative=False,
                         meaningful_difference: bool = False, **kwargs):
         sub_obj_list = []
         if not requirement:
@@ -798,16 +787,16 @@ class Union(MultipleSetQuery):
             specific_requirement = copy.deepcopy(requirement)
             for i in range(len(self.sub_queries)):
                 if i == choose_formula_num:
-                    sub_objs = self.sub_queries[i].backward_sample(projs, rprojs, specific_requirement, cumulative,
+                    sub_objs = self.sub_queries[i].backward_sample(projs, rprojs, rel2percentile, specific_requirement, cumulative,
                                                                    meaningful_difference, **kwargs)
                     sub_obj_list.append(sub_objs)
                 else:
-                    sub_objs = self.sub_queries[i].backward_sample(projs, rprojs, normal_requirement, cumulative,
+                    sub_objs = self.sub_queries[i].backward_sample(projs, rprojs, rel2percentile, normal_requirement, cumulative,
                                                                    meaningful_difference, **kwargs)
                     sub_obj_list.append(sub_objs)
         else:
             for query in self.sub_queries:
-                sub_objs = query.backward_sample(projs, rprojs, normal_requirement, cumulative,
+                sub_objs = query.backward_sample(projs, rprojs, rel2percentile, normal_requirement, cumulative,
                                                  meaningful_difference, **kwargs)
                 sub_obj_list.append(sub_objs)
 
@@ -877,7 +866,7 @@ class Difference(FirstOrderSetQuery):
         r_result = self.rquery.deterministic_query(projs)
         return l_result - r_result
 
-    def backward_sample(self, projs, rprojs, requirement=None, cumulative=False,
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement=None, cumulative=False,
                         meaningful_difference: bool = False, **kwargs):
         if not requirement:
             requirement = defaultdict(set)
@@ -888,7 +877,7 @@ class Difference(FirstOrderSetQuery):
         negative_requirement['must exclude'] = requirement['must include']
         if meaningful_difference:
             positive_choose_requirement = copy.deepcopy(requirement)
-            pos_objs = lquery.backward_sample(projs, rprojs, positive_choose_requirement,
+            pos_objs = lquery.backward_sample(projs, rprojs, rel2percentile, positive_choose_requirement,
                                               cumulative, meaningful_difference, **kwargs)
             negative_requirement['optional exclude'] = requirement['optional include']
             optional_exclude_set = pos_objs - requirement['must include'] - requirement['optional include']
@@ -896,28 +885,28 @@ class Difference(FirstOrderSetQuery):
             specific_negative_requirement = copy.deepcopy(negative_requirement)
             specific_negative_requirement['optional include'] = set(exclude_element)
             neg_objs = rquery.backward_sample(
-                projs, rprojs, specific_negative_requirement, cumulative, meaningful_difference, **kwargs)
+                projs, rprojs, rel2percentile, specific_negative_requirement, cumulative, meaningful_difference, **kwargs)
             pos_objs = pos_objs - neg_objs
             return pos_objs
         else:
             positive_requirement = copy.deepcopy(requirement)
             negative_requirement['must include'] = requirement['must exclude']
             if requirement['must include']:
-                lobjs = lquery.backward_sample(projs, rprojs, positive_requirement,
+                lobjs = lquery.backward_sample(projs, rprojs, rel2percentile, positive_requirement,
                                                cumulative, meaningful_difference, **kwargs)
-                robjs = rquery.backward_sample(projs, rprojs, negative_requirement,
+                robjs = rquery.backward_sample(projs, rprojs, rel2percentile, negative_requirement,
                                                cumulative, meaningful_difference, **kwargs)
             else:
                 choose_lr = random.randint(0, 1)
                 if choose_lr:
-                    lobjs = lquery.backward_sample(projs, rprojs, positive_requirement,
+                    lobjs = lquery.backward_sample(projs, rprojs, rel2percentile, positive_requirement,
                                                    cumulative, meaningful_difference, **kwargs)
-                    robjs = rquery.backward_sample(projs, rprojs, requirement=None, cumulative=cumulative,
+                    robjs = rquery.backward_sample(projs, rprojs, rel2percentile, requirement=None, cumulative=cumulative,
                                                    meaningful_difference=meaningful_difference, **kwargs)
                 else:
-                    lobjs = lquery.backward_sample(projs, rprojs, requirement=None, cumulative=cumulative,
+                    lobjs = lquery.backward_sample(projs, rprojs, rel2percentile, requirement=None, cumulative=cumulative,
                                                    meaningful_difference=meaningful_difference, **kwargs)
-                    robjs = rquery.backward_sample(projs, rprojs, negative_requirement, cumulative,
+                    robjs = rquery.backward_sample(projs, rprojs, rel2percentile, negative_requirement, cumulative,
                                                    meaningful_difference, **kwargs)
             lobjs = lobjs - robjs
             return lobjs
@@ -987,7 +976,7 @@ class Multiple_Difference(MultipleSetQuery):
         ans_origin = lquery.deterministic_query(projs)
         return ans_origin - ans_excluded
 
-    def backward_sample(self, projs, rprojs, requirement=None, cumulative=False,
+    def backward_sample(self, projs, rprojs, rel2percentile=None, requirement=None, cumulative=False,
                         meaningful_difference: bool = False, **kwargs):
         sub_obj_list, neg_obj_list = [], []
         lquery, rqueries = self.sub_queries[0], self.sub_queries[1:]
@@ -999,7 +988,7 @@ class Multiple_Difference(MultipleSetQuery):
         negative_requirement['must exclude'] = requirement['must include']
         if meaningful_difference:
             negative_requirement['optional exclude'] = requirement['optional include']
-            pos_objs = lquery.backward_sample(projs, rprojs, positive_choose_requirement,
+            pos_objs = lquery.backward_sample(projs, rprojs, rel2percentile, positive_choose_requirement,
                                               cumulative, meaningful_difference, **kwargs)
 
             optional_exclude_set = pos_objs - requirement['must include'] - requirement['optional include']
@@ -1014,40 +1003,40 @@ class Multiple_Difference(MultipleSetQuery):
                     specific_negative_requirement['optional include'] = {exclude_element_list[exclude_ordinal]}
                     exclude_ordinal += 1
                     neg_objs = rqueries[i].backward_sample(
-                        projs, rprojs, specific_negative_requirement, cumulative, meaningful_difference, **kwargs)
+                        projs, rprojs, rel2percentile, specific_negative_requirement, cumulative, meaningful_difference, **kwargs)
                 else:
-                    neg_objs = rqueries[i].backward_sample(projs, rprojs, negative_requirement, cumulative,
+                    neg_objs = rqueries[i].backward_sample(projs, rprojs, rel2percentile, negative_requirement, cumulative,
                                                            meaningful_difference, **kwargs)
                 pos_objs = pos_objs - neg_objs
             return pos_objs
         else:
             negative_requirement['must include'] = requirement['must exclude']
             if requirement['must include']:
-                lobjs = lquery.backward_sample(projs, rprojs, positive_choose_requirement,
+                lobjs = lquery.backward_sample(projs, rprojs, rel2percentile, positive_choose_requirement,
                                                cumulative, meaningful_difference, **kwargs)
                 for rquery in rqueries:
-                    robjs = rquery.backward_sample(projs, rprojs, negative_requirement,
+                    robjs = rquery.backward_sample(projs, rprojs, rel2percentile, negative_requirement,
                                                    cumulative, meaningful_difference, **kwargs)
                     lobjs = lobjs - robjs
             else:
                 choose_lr = random.randint(0, 1)
                 if choose_lr:
-                    lobjs = lquery.backward_sample(projs, rprojs, positive_choose_requirement,
+                    lobjs = lquery.backward_sample(projs, rprojs, rel2percentile, positive_choose_requirement,
                                                    cumulative, meaningful_difference, **kwargs)
                     for rquery in rqueries:
-                        robjs = rquery.backward_sample(projs, rprojs, requirement=None, cumulative=cumulative,
+                        robjs = rquery.backward_sample(projs, rprojs, rel2percentile, requirement=None, cumulative=cumulative,
                                                        meaningful_difference=meaningful_difference, **kwargs)
                         lobjs = lobjs - robjs
                 else:
                     choose_formula = random.randrange(0, len(rqueries))
-                    lobjs = lquery.backward_sample(projs, rprojs, requirement=None, cumulative=cumulative,
+                    lobjs = lquery.backward_sample(projs, rprojs, rel2percentile, requirement=None, cumulative=cumulative,
                                                    meaningful_difference=meaningful_difference, **kwargs)
                     for i in range(len(rqueries)):
                         if i == choose_formula:
-                            robjs = rqueries[i].backward_sample(projs, rprojs, negative_requirement, cumulative,
+                            robjs = rqueries[i].backward_sample(projs, rprojs, rel2percentile, negative_requirement, cumulative,
                                                                 meaningful_difference, **kwargs)
                         else:
-                            robjs = rqueries[i].backward_sample(projs, rprojs, requirement=None, cumulative=cumulative,
+                            robjs = rqueries[i].backward_sample(projs, rprojs, rel2percentile, requirement=None, cumulative=cumulative,
                                                                 meaningful_difference=meaningful_difference, **kwargs)
                         lobjs = lobjs - robjs
             return lobjs
@@ -1089,9 +1078,9 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
             ops: operational string
             sub_range_list: a list of sub ranges
         """
-        if fosq_formula[i+1]  in  'Ddne':
+        if fosq_formula[i+1]  in  'Dde':
             ops, ff = fosq_formula[i+1], 0.0
-        elif fosq_formula[i+1] in 'p':
+        elif fosq_formula[i+1] in 'np':
             ops = fosq_formula[i+1:fosq_formula.find(',', i+1)].split('-')
             ops, ff = ops
             ff = float(ff)
@@ -1145,88 +1134,9 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
 
         if valid_sub_ranges is True:
             args = [cached_objects[r] for r in sub_range_list]
-            if ops not in 'en':
+            if ops != 'e':
                 args = [ff] + args
             obj = ops_dict[ops](*args)
-            todo_ranges.pop(-1)
-            cached_objects[(i, j)] = obj
-    return cached_objects[_b, _e]
-
-
-def transform_soft_formula(fosq_formula: str, percentile=0, scalr=1):
-    # Transform  query fomulas of beraEto its soft_fosq_formula
-    cached_objects = {}
-    cached_subranges = {}
-    todo_ranges = []
-
-    def identify_range(i, j):
-        """ i, and j is the index of ( and ) respectively
-        identify the information contained in the range
-        return
-            ops: operational string
-            sub_range_list: a list of sub ranges
-        """
-        ops = fosq_formula[i + 1]
-        level_stack = []
-        sub_range_list = []
-        for k in range(i + 1, j):
-            if fosq_formula[k] == '(':
-                level_stack.append(k)
-            elif fosq_formula[k] == ')':
-                begin = level_stack.pop(-1)
-                if len(level_stack) == 0:
-                    sub_range_list.append((begin, k))
-        if ops == 'e':
-            assert len(sub_range_list) == 0
-        elif ops in 'pn':
-            assert len(sub_range_list) == 1
-        elif ops == 'd':
-            assert len(sub_range_list) == 2
-        elif ops in 'uiIUD':
-            assert len(sub_range_list) > 1
-        elif ops in '()':
-            return identify_range(i + 1, j - 1)
-        else:
-            raise NotImplementedError(f"Ops {ops} is not defined")
-        return ops, sub_range_list
-
-
-    _b = 0
-    _e = len(fosq_formula) - 1
-    todo_ranges.append((_b, _e))
-    while (_b, _e) not in cached_objects:
-        i, j = todo_ranges[-1]
-
-        if (i, j) in cached_subranges:
-            ops, sub_range_list = cached_subranges[(i, j)]
-        else:
-            ops, sub_range_list = identify_range(i, j)
-            cached_subranges[(i, j)] = (ops, sub_range_list)
-
-        valid_sub_ranges = True
-        for _i, _j in sub_range_list:
-            if not (_i, _j) in cached_objects:
-                todo_ranges.append((_i, _j))
-                valid_sub_ranges = False
-
-        if valid_sub_ranges is True:
-            args = [cached_objects[r] for r in sub_range_list]
-            if ops == "e":
-                obj = "(e)"
-            elif ops == "p":
-                obj = f"(p-{percentile},{args[0]})"
-            elif ops == "i":
-                imporatnce = "".join([f"-{scalr**i}" for i in range(len(args))])
-                sub_soft_formula = "".join([f",{args[i]}" for i in range(len(args))])
-                obj = f"(i{imporatnce}{sub_soft_formula})"
-            elif ops == "n":
-                obj = f"(n,{args[0]})"
-            elif ops == "u":
-                sub_soft_formula = "".join([f"-{args[i]}" for i in range(len(args))])
-                obj = f"(u,{sub_soft_formula})"
-            else:
-                print("Ddin't support this operation!")
-#            obj = ops_dict[ops](*args)
             todo_ranges.pop(-1)
             cached_objects[(i, j)] = obj
     return cached_objects[_b, _e]
@@ -1262,7 +1172,8 @@ def binary_formula_iterator(depth=5,
                     op_candidates=op_candidates_dict[op], negation_length=negation_length)
                 for f in arg_candidate_iterator:
                     if op in 'p':
-                        alpha = random.uniform(0, 0.1) #Why random?
+#                        alpha = random.uniform(0, 0.1) #Why random?
+                        alpha = 0 #alpha is initialize as 0 and will be assigned when relation is assigned.
                         yield "({:s}-{:.3f},{:s})".format(op, alpha, f)
                     elif op in 'n':
                         epsilon = random.uniform(0, 0.2)
@@ -1288,11 +1199,12 @@ def binary_formula_iterator(depth=5,
                 for f1, f2 in product(arg1_candidate_iterator,
                                       arg2_candidate_iterator):
                     if op in 'i':
-                        beta = random.random()
-                        yield "({:s}-{:.3f}-{:.3f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
+#                        beta = random.random()
+                        scalr = 2
+                        yield "({:s}-{:.1f}-{:.1f},{:s},{:s})".format(op, scalr/(scalr+scalr**2), scalr**2/(scalr+scalr**2), f1, f2)
                     elif op in 'u':
                         beta = 0.5
-                        yield "({:s}-{:.3f}-{:.3f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
+                        yield "({:s}-{:.1f}-{:.1f},{:s},{:s})".format(op, beta, 1-beta, f1, f2)
 
 
 def copy_query(q: FirstOrderSetQuery, deep=False) -> FirstOrderSetQuery:
