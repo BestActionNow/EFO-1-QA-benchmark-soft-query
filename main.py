@@ -13,7 +13,7 @@ from utils.util import (Writer, load_data_with_indexing, load_task_manager, read
                         set_global_seed)
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--config', default='config/EFO-1_LogicE.yaml', type=str)
+parser.add_argument('--config', default='config/EFO-1_BetaE.yaml', type=str)
 parser.add_argument('--prefix', default='EFO-1_train', type=str)
 parser.add_argument('--checkpoint_path', default=None, type=str)
 parser.add_argument('--load_step', default=0, type=int)
@@ -90,9 +90,11 @@ def eval_step(model, eval_iterator, device, mode, allowed_easy_ans=False):
 
                     num_hard = len(hard_ans)
                     num_easy = len(easy_ans)
+                    ent_easy = [single_ans[0] for single_ans in easy_ans] # the alpha and beta of single_ans will be useful in the future.
+                    ent_hard = [single_ans[0] for single_ans in hard_ans]
                     assert len(set(hard_ans).intersection(set(easy_ans))) == 0
                     # only take those answers' rank
-                    cur_ranking = ranking[i, list(easy_ans) + list(hard_ans)]
+                    cur_ranking = ranking[i, list(ent_easy) + list(ent_hard)]
                     cur_ranking, indices = torch.sort(cur_ranking)
                     masks = indices >= num_easy
                     if device != torch.device('cpu'):

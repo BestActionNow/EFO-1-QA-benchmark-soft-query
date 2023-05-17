@@ -3,19 +3,21 @@ import os.path as osp
 import argparse
 import os
 import json
+
+from itertools import product
 from shutil import rmtree
 from multiprocessing import Pool
 
 from tqdm import tqdm
 import pandas as pd
 
-from fol.foq_v2 import (DeMorgan_replacement, concate_iu_chains, parse_formula,
+from fol.foq_v2 import (DeMorgan_replacement, concate_iu_chains, parse_formula, transform_soft_formula,
                         to_d, to_D, decompose_D, copy_query)
 from formula_generation import convert_to_dnf
 from utils.util import load_data_with_indexing, round_answers_value
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--benchmark_name", type=str, default="ranking")
+parser.add_argument("--benchmark_name", type=str, default="soft_fomula")
 parser.add_argument("--input_formula_file", type=str, default="outputs")
 parser.add_argument("--sample_size", default=10000, type=int)
 parser.add_argument("--knowledge_graph", action="append", default=["ppi5k"])
@@ -31,17 +33,17 @@ def normal_forms_transformation(query):
     result["original"] = query
     # result["DeMorgan"] = DeMorgan_replacement(copy_query(result["original"], True))
     # result['DeMorgan+MultiI'] = concate_iu_chains(copy_query(result["DeMorgan"], True))
-    # result["DNF"] = convert_to_dnf(copy_query(result["original"], True))
+    result["DNF"] = convert_to_dnf(copy_query(result["original"], True))
     # result["diff"] = to_d(copy_query(result["original"], True))
     # result["DNF+diff"] = to_d(copy_query(result["DNF"], True))
-    # result["DNF+MultiIU"] = concate_iu_chains(copy_query(result["DNF"], True))
-    # result['DNF+MultiIU'].sort_sub()
+    result["DNF+MultiIU"] = concate_iu_chains(copy_query(result["DNF"], True))
+    result['DNF+MultiIU'].sort_sub()
     # result["DNF+MultiIUD"] = to_D(copy_query(result["DNF+MultiIU"], True))
     # result["DNF+MultiIUd"] = decompose_D(copy_query(result["DNF+MultiIUD"], True))
     return result
 
 
-def sample_1p(path, easy_proj, hard_proj, data):
+def sample_1p(path, rel2percentile, easy_proj, hard_proj, data):
     #enumerate all the 1p queries
     queries_1p = []
     target_file = os.path.join(path, "train.txt")
@@ -52,14 +54,16 @@ def sample_1p(path, easy_proj, hard_proj, data):
                     queries_1p.append([h, r])
     count = 0
     for e, r in queries_1p:
-        dobject = {"o": "e", "a": [int(e)]}
-        dobject = {"o": "p", "a": [[int(r)], dobject], "f" : "0.000"}
-        meta_formula_v2 = json.dumps(dobject)
-        query_instance = parse_formula('(p-0.000,(e))')
-        query_instance.additive_ground(dobject)
-        easy_answers = query_instance.deterministic_query(easy_proj)
-        data['answer_set'].append(easy_answers)
-        data["original"].append(query_instance.dumps)
+        dobject_e = {"o": "e", "a": [int(e)]}
+        dobjects_percentile = []
+        for percentile in rel2percentile[r]:
+            dobject_1p = {"o": "p", "a": [[int(r)], dobject_e], "f" : f"{percentile}"}
+            meta_formula_v2 = json.dumps(dobject_1p)
+            query_instance = parse_formula('(p-0.000,(e))')
+            query_instance.additive_ground(dobject_1p)
+            answer_set = query_instance.deterministic_query(easy_proj)
+            data['answer_set'].append(answer_set)
+            data["original"].append(query_instance.dumps)
     return data
 
 def sample_by_row(row, easy_proj, easy_rproj, hard_proj, meaningful_difference: bool = False):
@@ -111,9 +115,18 @@ def sample_by_row_final(row, easy_proj, hard_proj, hard_rproj, meaningful_differ
     return rounded_easy_answer, rounded_hard_answer, results
 
 
-def sample_by_row_final_ranking(row, proj, rproj, meaningful_difference_setting: str = 'mixed'):
+def sample_by_row_final_ranking(row, proj, rproj, rel2percentile,  meaningful_difference_setting: str = 'mixed'):
+    percentile_list = [25, 50, 75]
+    scalr_list = [1, 0.8, 0.5]
+    if "i" in row.original or "I" in row.original:
+        soft_formulas = [transform_soft_formula(row.original, percentile = percentile, scalr=scalar) \
+                                        for percentile, scalar in product(percentile_list, scalr_list)]
+    else:
+        soft_formulas = [transform_soft_formula(row.original, percentile = percentile) \
+                                        for percentile in percentile_list]     
+    formula_1 = soft_formulas[0]
     while True:
-        query_instance = parse_formula(row.original)
+        query_instance = parse_formula(formula_1)
         if meaningful_difference_setting == 'mixed':
             formula = query_instance.formula
             meaningful_difference = ('d' in formula or 'D' in formula or 'n' in formula)
@@ -123,25 +136,30 @@ def sample_by_row_final_ranking(row, proj, rproj, meaningful_difference_setting:
             meaningful_difference = False
         else:
             assert False, 'Invalid setting!'
-        full_answers = query_instance.backward_sample(proj, rproj,
-                                                      meaningful_difference=meaningful_difference)
-        assert full_answers == query_instance.deterministic_query(proj)
-        results = normal_forms_transformation(query_instance)
-        if 0 < len(full_answers) <= 100:
-            break
 
+        full_answers = query_instance.backward_sample(proj, rproj, 
+                                                      meaningful_difference=meaningful_difference)
+#        assert full_answers == query_instance.deterministic_query(proj)
+#        valid_answers = set([answer for answer in list(full_answers) if answer[1] > 0])
+        if 0 < len(full_answers) < 200:
+            break
+    valid_query_object = json.loads(query_instance.dumps)
+    answer_of_queries = []
+    results_of_queries = []
+    for fomula in soft_formulas:
+            query_instance = parse_formula(fomula)
+            query_instance.additive_ground(valid_query_object, rel2percentile)
+            answer_of_queries.append(query_instance.deterministic_query(proj))
+            results_of_queries.append(normal_forms_transformation(query_instance))
     # for key in results:
         # parse_formula(row[key]).additive_ground(json.loads(results[key].dumps))
-    return full_answers, results
+    return answer_of_queries, results_of_queries
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
     print(args)
-    beta_data_folders = {"FB15k-237": "data/FB15k-237-betae",
-                         "FB15k": "data/FB15k-betae",
-                         "NELL-995": "data/NELL-betae",
-                         "cn15k": "data/processed/cn15k",
+    beta_data_folders = {"cn15k": "data/processed/cn15k",
                          "ppi5k": "data/processed/ppi5k",
                          "NELL-1115": "data/processed/NELL-1115-betae"}
     print(args.knowledge_graph)
@@ -154,16 +172,18 @@ if __name__ == "__main__":
 
         kg_name = osp.basename(data_path).replace("-betae", "")
         out_folder = osp.join("data", args.benchmark_name, kg_name)
+        with open(os.path.join(data_path, "percentile_25_50_75.json"), "r") as f:
+            rel2percentile = json.load(f)
         os.makedirs(out_folder, exist_ok=True)
         modes = ["train", "valid", "test"]
         for mode in modes:
-            df = pd.read_csv(os.path.join(args.input_formula_file, f"betae_type_{mode}.csv"))
+            df = pd.read_csv(os.path.join(args.input_formula_file, f"{mode}_formulas.csv"))
             for i, row in tqdm(df.iterrows(), total=len(df)):
                 data = defaultdict(list)
                 fid = row.formula_id
                 if mode == "train":
-                    if row.original == '(p-0.000,(e))':
-                        data = sample_1p(data_path, proj_train, proj_valid, data)
+                    if row.original == '(p,(e))':
+                        data = sample_1p(data_path, rel2percentile, proj_train, proj_valid, data)
                         pd.DataFrame(data).to_csv(osp.join(out_folder, f"{mode}-{fid}.csv"), index=False)
                         number_queries_1p = len(data["answer_set"])
                         continue
@@ -208,7 +228,7 @@ if __name__ == "__main__":
                     while sampled_query < args.num_samples:
                         if mode == "train":
                             train_answers, results = sample_by_row_final_ranking(
-                                row, proj_train, reverse_test,
+                                row, proj_train, reverse_test, rel2percentile, 
                                 meaningful_difference_setting=args.meaningful_difference_setting)
                             if not 0 < len(train_answers):
                                 continue
@@ -222,18 +242,20 @@ if __name__ == "__main__":
                                     row, proj_test, reverse_test,
                                     meaningful_difference_setting=args.meaningful_difference_setting)
 
-                        if results['original'].dumps in generated:
+                        if results[0]['original'].dumps in generated:
                             continue
                         else:
-                            generated.add(results['original'].dumps)
-                            sampled_query += 1
-                            if mode == "train":
-                                data['answer_set'].append(train_answers)
-                            elif mode == "valid":
-                                data['answer_set'].append(valid_answers)
-                            elif mode == "valid":
-                                data['answer_set'].append(test_answers)
+                            for i in range(len(results)):
+                                generated.add(results[i]['original'].dumps)
+                                sampled_query += 1
+                                if mode == "train":
+                                    data['answer_set'].append(train_answers[i])
+                                elif mode == "valid":
+                                    data['answer_set'].append(valid_answers[i])
+                                elif mode == "valid":
+                                    data['answer_set'].append(test_answers[i])
                         for k in results:
-                            data[k].append(results[k].dumps)
+                            index = list(k.keys())[0]
+                            data[index].append(k[index].dumps)
 
                 pd.DataFrame(data).to_csv(osp.join(out_folder, f"{mode}-{fid}.csv"), index=False)
