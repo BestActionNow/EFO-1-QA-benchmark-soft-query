@@ -198,7 +198,7 @@ class Entity(FirstOrderSetQuery):
         }
         return json.dumps(dobject)
 
-    def additive_ground(self, dobject: Dobject):
+    def additive_ground(self, dobject: Dobject, rel2percentile=None):
         obj, entity_list = dobject['o'], dobject['a']
         assert obj == self.__o__
         assert all(isinstance(i, int) for i in entity_list)
@@ -272,31 +272,30 @@ class Entity(FirstOrderSetQuery):
 class Negation(FirstOrderSetQuery):
     __o__ = 'n'
 
-    def __init__(self, epsilon: float, q: FirstOrderSetQuery = None):
+    def __init__(self, q: FirstOrderSetQuery = None):
         super().__init__()
-        self.epsilon = epsilon
         self.query = q
+
         
     def sort_sub(self):
         self.query.sort_sub()
 
     @property
     def formula(self):
-        return "(n-{:.3f},{:s})".format(self.epsilon, self.query.formula)
+        return "(n,{:s})".format(self.query.formula)
 
     @property
     def dumps(self):
         dobject = {
             'o': self.__o__,
             'a': json.loads(self.query.dumps),
-            'r': "{:.3f}".format(self.epsilon)
         }
         return json.dumps(dobject)
 
-    def additive_ground(self, dobject: Dobject):
+    def additive_ground(self, dobject: Dobject, rel2percentile=None):
         obj, sub_dobject = dobject['o'], dobject['a']
         assert obj == self.__o__
-        self.query.additive_ground(sub_dobject)
+        self.query.additive_ground(sub_dobject, rel2percentile)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -311,9 +310,9 @@ class Negation(FirstOrderSetQuery):
 
     def deterministic_query(self, projection):
         query_answers = self.query.deterministic_query(projection)
-        objects = projection.keys() - {e for (e, prob, impt) in query_answers}
-        impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
-        objects = {(e, 1 - self.epsilon, impt_mean) for e in objects}
+#        objects = projection.keys() - {e for (e, prob, impt) in query_answers}
+#        impt_mean = np.mean([impt for (e, prob, impt) in query_answers]) if len(query_answers) > 0 else 1.0
+        objects = query_answers
         return objects
 
     def backward_sample(self, projs, rprojs, requirement: bool = None, cumulative=False,
@@ -362,7 +361,7 @@ class Projection(FirstOrderSetQuery):
 
     @property
     def formula(self):
-        return "(p-{:.3f},{})".format(self.alpha, self.query.formula)
+        return "(p-{:.1f},{})".format(self.alpha, self.query.formula)
 
     @property
     def dumps(self):
@@ -373,12 +372,16 @@ class Projection(FirstOrderSetQuery):
         }
         return json.dumps(dobject)
 
-    def additive_ground(self, dobject: Dobject):
+    def additive_ground(self, dobject: Dobject, rel2percentile=None):
         obj, (relation_list, sub_dobject) = dobject['o'], dobject['a']
         assert obj == self.__o__
         assert all(isinstance(i, int) for i in relation_list)
         self.relations.extend(relation_list)
-        self.query.additive_ground(sub_dobject)
+        if self.alpha > 1:
+            self.alpha = rel2percentile[f"{self.relations[0]}"][int(self.alpha)//25-1]
+        elif 0 < float(dobject["f"]) <=1:
+            self.alpha = float(dobject["f"])
+        self.query.additive_ground(sub_dobject, rel2percentile)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -415,7 +418,8 @@ class Projection(FirstOrderSetQuery):
                     impts_dict[chi_entity].append(par_impt * func_g(projs[par_entity][rel][chi_entity], 0.0))
         answer = set()
         for ent, probs_list in probs_dict.items():
-            answer.add((ent, np.max(probs_list), np.max(impts_dict[ent])))
+ #           if np.max(probs_list) > 0.0:
+                answer.add((ent, np.max(probs_list), np.max(impts_dict[ent])))
         return answer
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative=False, meaningful_difference: bool = False,
@@ -567,19 +571,19 @@ class MultipleSetQuery(FirstOrderSetQuery):
             symb = self.__o__.upper()
         else:
             symb = self.__o__
-        beta_format = "-".join(["{:.3f}".format(ff) for ff in self.beta])
+        beta_format = "-".join(["{:.1f}".format(ff) for ff in self.beta])
         return "({}-{},{})".format(
             symb,
             beta_format,
             ",".join(q.formula for q in self.sub_queries)
         )
 
-    def additive_ground(self, dobject: Dobject):
+    def additive_ground(self, dobject: Dobject, rel2percentile=None):
         obj, sub_dobjects = dobject['o'], dobject['a']
         assert obj == self.__o__
         assert len(self.sub_queries) == len(sub_dobjects)
         for q, dobj in zip(self.sub_queries, sub_dobjects):
-            q.additive_ground(dobj)
+            q.additive_ground(dobj, rel2percentile)
 
     def embedding_estimation(self,
                              estimator: AppFOQEstimator,
@@ -618,18 +622,29 @@ class Intersection(MultipleSetQuery):
         return estimator.get_conjunction_embedding(embed_list, **kwargs)
 
     def deterministic_query(self, projs):
-        sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries]
+        pos_sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries if q.__o__ != "n"]
+        neg_sub_obj_list = [q.deterministic_query(projs) for q in self.sub_queries if q.__o__  == "n"]
         ent2probs = defaultdict(list)
         ent2impts = defaultdict(list)
         sub_ent_list = []
-        for sub_objs in sub_obj_list:
+        for sub_objs in pos_sub_obj_list:
             sub_ent_list.append(set())
             for e, prob, impt in sub_objs:
                 sub_ent_list[-1].add(e)
                 ent2probs[e].append(prob)
                 ent2impts[e].append(impt)
-
-        result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in set.intersection(*sub_ent_list)}
+        candidate_answer = None
+        if len(sub_ent_list) > 1:
+            candidate_answer = set.intersection(*sub_ent_list)
+        else:
+            candidate_answer = sub_ent_list[0]
+    
+        if neg_sub_obj_list: # In our setting, only a edge is negation.
+            for e, prob, impt in neg_sub_obj_list[0]:
+                if e in candidate_answer:
+                    ent2impts[e].append(-impt)
+        result = {(e, np.min(ent2probs[e]), np.sum(np.array(ent2impts[e]) * np.array(self.beta)[:len(ent2impts[e])])) for e in candidate_answer}
+#        result = {element for element in result if element[-1]>0}
         return result
 
     def backward_sample(self, projs, rprojs, requirement=None, cumulative: bool = False,
@@ -642,7 +657,6 @@ class Intersection(MultipleSetQuery):
         for sub_query in self.sub_queries:
             if sub_query.__o__ == 'n':
                 neg_subqueries.append(sub_query.query)
-                neg_subqueries_epsilon.append(sub_query.epsilon)
             else:
                 positive_subqueries.append(sub_query)
         if meaningful_difference and len(positive_subqueries) > 0:
@@ -662,7 +676,7 @@ class Intersection(MultipleSetQuery):
                 else:
                     pos_objs = positive_subqueries[i].backward_sample(projs, rprojs, positive_requirement,
                                                                       cumulative, meaningful_difference, **kwargs)
-                pos_ent_set = {e for e,_ in pos_objs}
+                pos_ent_set = {e for e,_,_ in pos_objs}
                 pos_ent_list.append(pos_ent_set)
 
                 for ent, prob, impt in pos_objs:
@@ -690,16 +704,15 @@ class Intersection(MultipleSetQuery):
                     neg_objs = neg_subqueries[i].backward_sample(projs, rprojs, negative_requirement, cumulative,
                                                                  meaningful_difference, **kwargs)
 
-                for ent in all_pos_objs:
-                    ent2probs[ent].append(1 - neg_subqueries_epsilon[i].epsilon)
+#                for ent in all_pos_objs:
+#                    ent2probs[ent].append(1 - neg_subqueries_epsilon[i].epsilon)
                 
-                for _, prob, impt in neg_objs:
-                    for ent in all_pos_objs:
-                        ent2impts[ent].append(impt)
-                
-                all_pos_objs = all_pos_objs - {e for e, _ in neg_objs}
+                for n_e, prob, impt in neg_objs:
+                    if n_e in all_pos_objs:
+                        ent2impts[n_e].append(-impt)
 
-            result = {(e, np.min(ent2probs[e]), np.mean(np.array(ent2impts[e]) * np.array(self.beta))) for e in all_pos_objs}
+            result = {(e, np.min(ent2probs[e]), np.sum(np.array(ent2impts[e]) * np.array(self.beta)[:len(ent2impts[e])])) for e in all_pos_objs}
+            # the importance should add when i.
             return result
         else:
             new_requirement = copy.deepcopy(requirement)
@@ -1076,9 +1089,9 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
             ops: operational string
             sub_range_list: a list of sub ranges
         """
-        if fosq_formula[i+1]  in  'Dde':
+        if fosq_formula[i+1]  in  'Ddne':
             ops, ff = fosq_formula[i+1], 0.0
-        elif fosq_formula[i+1] in 'np':
+        elif fosq_formula[i+1] in 'p':
             ops = fosq_formula[i+1:fosq_formula.find(',', i+1)].split('-')
             ops, ff = ops
             ff = float(ff)
@@ -1132,9 +1145,88 @@ def parse_formula(fosq_formula: str) -> FirstOrderSetQuery:
 
         if valid_sub_ranges is True:
             args = [cached_objects[r] for r in sub_range_list]
-            if ops != 'e':
+            if ops not in 'en':
                 args = [ff] + args
             obj = ops_dict[ops](*args)
+            todo_ranges.pop(-1)
+            cached_objects[(i, j)] = obj
+    return cached_objects[_b, _e]
+
+
+def transform_soft_formula(fosq_formula: str, percentile=0, scalr=1):
+    # Transform  query fomulas of beraEto its soft_fosq_formula
+    cached_objects = {}
+    cached_subranges = {}
+    todo_ranges = []
+
+    def identify_range(i, j):
+        """ i, and j is the index of ( and ) respectively
+        identify the information contained in the range
+        return
+            ops: operational string
+            sub_range_list: a list of sub ranges
+        """
+        ops = fosq_formula[i + 1]
+        level_stack = []
+        sub_range_list = []
+        for k in range(i + 1, j):
+            if fosq_formula[k] == '(':
+                level_stack.append(k)
+            elif fosq_formula[k] == ')':
+                begin = level_stack.pop(-1)
+                if len(level_stack) == 0:
+                    sub_range_list.append((begin, k))
+        if ops == 'e':
+            assert len(sub_range_list) == 0
+        elif ops in 'pn':
+            assert len(sub_range_list) == 1
+        elif ops == 'd':
+            assert len(sub_range_list) == 2
+        elif ops in 'uiIUD':
+            assert len(sub_range_list) > 1
+        elif ops in '()':
+            return identify_range(i + 1, j - 1)
+        else:
+            raise NotImplementedError(f"Ops {ops} is not defined")
+        return ops, sub_range_list
+
+
+    _b = 0
+    _e = len(fosq_formula) - 1
+    todo_ranges.append((_b, _e))
+    while (_b, _e) not in cached_objects:
+        i, j = todo_ranges[-1]
+
+        if (i, j) in cached_subranges:
+            ops, sub_range_list = cached_subranges[(i, j)]
+        else:
+            ops, sub_range_list = identify_range(i, j)
+            cached_subranges[(i, j)] = (ops, sub_range_list)
+
+        valid_sub_ranges = True
+        for _i, _j in sub_range_list:
+            if not (_i, _j) in cached_objects:
+                todo_ranges.append((_i, _j))
+                valid_sub_ranges = False
+
+        if valid_sub_ranges is True:
+            args = [cached_objects[r] for r in sub_range_list]
+            if ops == "e":
+                obj = "(e)"
+            elif ops == "p":
+                obj = f"(p-{percentile},{args[0]})"
+            elif ops == "i":
+                imporatnce = "".join([f"-{scalr**i}" for i in range(len(args))])
+                sub_soft_formula = "".join([f",{args[i]}" for i in range(len(args))])
+                obj = f"(i{imporatnce}{sub_soft_formula})"
+            elif ops == "n":
+                obj = f"(n,{args[0]})"
+            elif ops == "u":
+                sub_soft_formula = "".join([f"-{args[i]}" for i in range(len(args))])
+                obj = f"(u,{sub_soft_formula})"
+            else:
+                print("Ddin't support this operation!")
+#            obj = ops_dict[ops](*args)
             todo_ranges.pop(-1)
             cached_objects[(i, j)] = obj
     return cached_objects[_b, _e]
@@ -1161,7 +1253,7 @@ def binary_formula_iterator(depth=5,
 
     for op in op_candidates:
         if (op == 'e' and num_anchor_nodes == 1):
-            yield "(p-0.000,(e))"
+            yield "(p-0.0,(e))"
         elif op in 'np':
             if negation_length:
                 arg_candidate_iterator = binary_formula_iterator(
