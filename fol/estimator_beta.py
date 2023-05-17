@@ -348,8 +348,11 @@ class BetaEstimator4V(AppFOQEstimator):
         chosen_ans, chosen_false_ans, subsampling_weight = \
             inclusion_sampling(answer_set, negative_size=self.negative_size,
                                entity_num=self.n_entity)  # todo: negative
+        chosen_ans_ent = [[single_ans[0] for single_ans in ans] for ans in chosen_ans]
+        chosen_ans_alpha = [[single_ans[1] for single_ans in ans] for ans in chosen_ans]
+        chosen_ans_beta = [[single_ans[2] for single_ans in ans] for ans in chosen_ans]
         answer_embedding = self.get_entity_embedding(
-            torch.tensor(chosen_ans, device=self.device)).squeeze()
+            torch.tensor(chosen_ans_ent, device=self.device)).squeeze()
         if union:
             positive_union_logit = self.compute_logit(
                 answer_embedding.unsqueeze(1), query_dist)  # b*disj
