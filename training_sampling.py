@@ -23,7 +23,7 @@ parser.add_argument("--sample_size", default=10000, type=int)
 parser.add_argument("--knowledge_graph", action="append", default=["ppi5k"])
 parser.add_argument("--ncpus", type=int, default=1)
 parser.add_argument("--num_samples", type=int, default=50000)
-parser.add_argument("--meaningful_difference_setting", type=str, default='fixed_False')
+parser.add_argument("--meaningful_difference_setting", type=str, default='mixed')
 
 
 def normal_forms_transformation(query):
@@ -124,7 +124,7 @@ def sample_by_row_final_ranking(row, proj, rproj, rel2percentile,  meaningful_di
     else:
         soft_formulas = [transform_soft_formula(row.original, percentile = percentile) \
                                         for percentile in percentile_list]     
-    formula_1 = soft_formulas[0]
+    formula_1 = soft_formulas[-1]
     while True:
         query_instance = parse_formula(formula_1)
         if meaningful_difference_setting == 'mixed':
@@ -136,9 +136,11 @@ def sample_by_row_final_ranking(row, proj, rproj, rel2percentile,  meaningful_di
             meaningful_difference = False
         else:
             assert False, 'Invalid setting!'
-
-        full_answers = query_instance.backward_sample(proj, rproj, 
+        full_answers = query_instance.backward_sample(proj, rproj, rel2percentile,
                                                       meaningful_difference=meaningful_difference)
+        ground_formula_1 = query_instance.formula
+#        if full_answers != query_instance.deterministic_query(proj): #For debug
+#            query_instance.deterministic_query(proj) 
 #        assert full_answers == query_instance.deterministic_query(proj)
 #        valid_answers = set([answer for answer in list(full_answers) if answer[1] > 0])
         if 0 < len(full_answers) < 200:
@@ -148,9 +150,10 @@ def sample_by_row_final_ranking(row, proj, rproj, rel2percentile,  meaningful_di
     results_of_queries = []
     for fomula in soft_formulas:
             query_instance = parse_formula(fomula)
-            query_instance.additive_ground(valid_query_object, rel2percentile)
+            query_instance.additive_ground(valid_query_object, rel2percentile) # add relation , entity and relation's percentile
             answer_of_queries.append(query_instance.deterministic_query(proj))
             results_of_queries.append(normal_forms_transformation(query_instance))
+
     # for key in results:
         # parse_formula(row[key]).additive_ground(json.loads(results[key].dumps))
     return answer_of_queries, results_of_queries
@@ -189,8 +192,8 @@ if __name__ == "__main__":
                         continue
                     args.num_samples = int(number_queries_1p * row.number / 1000000)
                 else:
-                    if row.original == '(p-0.000,(e))':
-                        args.num_samples = int(number_queries_1p * 0.3)
+                    if row.original == '(p,(e))':
+                        args.num_samples = int(number_queries_1p * 0.001)
                     else:
                         args.num_samples = row.number
                 if args.ncpus > 1:
@@ -235,11 +238,11 @@ if __name__ == "__main__":
                         else:
                             if mode == "valid":
                                 valid_answers, results = sample_by_row_final_ranking(
-                                    row, proj_valid, reverse_test,
+                                    row, proj_valid, reverse_test,rel2percentile,
                                     meaningful_difference_setting=args.meaningful_difference_setting)
                             elif mode == "test":
                                 test_answers, results = sample_by_row_final_ranking(
-                                    row, proj_test, reverse_test,
+                                    row, proj_test, reverse_test,rel2percentile,
                                     meaningful_difference_setting=args.meaningful_difference_setting)
 
                         if results[0]['original'].dumps in generated:
